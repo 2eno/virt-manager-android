@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A monitor with a stack of VM "windows": the app's adaptive icon foreground. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- back window -->
+    <path android:fillColor="#7FA2F0"
+        android:pathData="M40,30h30a4,4 0,0 1,4 4v20a4,4 0,0 1,-4 4h-30a4,4 0,0 1,-4 -4v-20a4,4 0,0 1,4 -4z" />
+    <!-- monitor -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M32,38h40a5,5 0,0 1,5 5v24a5,5 0,0 1,-5 5h-40a5,5 0,0 1,-5 -5v-24a5,5 0,0 1,5 -5z" />
+    <path android:fillColor="#1F428F"
+        android:pathData="M33,44h38v22h-38z" />
+    <!-- play/run glyph -->
+    <path android:fillColor="#9CF0F5"
+        android:pathData="M48,49l10,6l-10,6z" />
+    <!-- stand -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M48,72h8v5h-8z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M42,77h20a2,2 0,0 1,2 2v0a2,2 0,0 1,-2 2h-20a2,2 0,0 1,-2 -2v0a2,2 0,0 1,2 -2z" />
+</vector>
