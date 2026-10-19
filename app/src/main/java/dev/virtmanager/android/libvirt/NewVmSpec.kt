@@ -7,6 +7,8 @@ enum class Firmware { BIOS, UEFI }
 sealed interface NetworkSource {
     data class Virtual(val network: String) : NetworkSource
     data class Bridge(val bridge: String) : NetworkSource
+    /** QEMU's user-mode (SLIRP/passt) networking: works without any host setup, e.g. qemu:///session. */
+    data object User : NetworkSource
     data object None : NetworkSource
 }
 
@@ -25,6 +27,10 @@ data class NewVmSpec(
     /** "kvm" when the host has hardware virtualization, otherwise "qemu" (software emulation). */
     val virtType: String = "kvm",
     val uuid: String = UUID.randomUUID().toString(),
+    /** Customize-before-install: mark the VM as not set up yet (see [SetupMarker]). */
+    val setupPending: Boolean = false,
+    /** Add an emulated TPM 2.0 (Windows 11 requires one). */
+    val tpm: Boolean = false,
 )
 
 enum class OsFamily(val label: String) {
@@ -58,6 +64,7 @@ object DomainXmlBuilder {
             appendLine("<domain type='${esc(spec.virtType)}'>")
             appendLine("  <name>${esc(spec.name)}</name>")
             appendLine("  <uuid>${esc(spec.uuid)}</uuid>")
+            if (spec.setupPending) appendLine("  <metadata>${SetupMarker.XML}</metadata>")
             appendLine("  <memory unit='MiB'>${spec.memoryMiB}</memory>")
             appendLine("  <currentMemory unit='MiB'>${spec.memoryMiB}</currentMemory>")
             appendLine("  <vcpu placement='static'>${spec.vcpus}</vcpu>")
@@ -72,7 +79,8 @@ object DomainXmlBuilder {
                 appendLine("    <apic/>")
             } else {
                 appendLine("    <acpi/>")
-                appendLine("    <gic version='host'/>")
+                // The host's GIC is only available with KVM; TCG uses libvirt's default.
+                if (spec.virtType == "kvm") appendLine("    <gic version='host'/>")
             }
             if (windows) {
                 appendLine("    <hyperv mode='custom'>")
@@ -127,6 +135,11 @@ object DomainXmlBuilder {
                     appendLine("      <model type='$nicModel'/>")
                     appendLine("    </interface>")
                 }
+                NetworkSource.User -> {
+                    appendLine("    <interface type='user'>")
+                    appendLine("      <model type='$nicModel'/>")
+                    appendLine("    </interface>")
+                }
                 NetworkSource.None -> Unit
             }
             appendLine("    <serial type='pty'>")
@@ -146,6 +159,11 @@ object DomainXmlBuilder {
             appendLine("    <video>")
             appendLine("      <model type='${if (windows) "vga" else "virtio"}' heads='1' primary='yes'/>")
             appendLine("    </video>")
+            if (spec.tpm) {
+                appendLine("    <tpm model='tpm-crb'>")
+                appendLine("      <backend type='emulator' version='2.0'/>")
+                appendLine("    </tpm>")
+            }
             appendLine("    <memballoon model='virtio'/>")
             appendLine("    <rng model='virtio'>")
             appendLine("      <backend model='random'>/dev/urandom</backend>")

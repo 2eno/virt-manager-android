@@ -3,6 +3,7 @@ package dev.virtmanager.android.libvirt
 import dev.virtmanager.android.libvirt.config.DomainCapabilities
 import dev.virtmanager.android.libvirt.config.DomainConfig
 import dev.virtmanager.android.libvirt.config.HostDevice
+import dev.virtmanager.android.libvirt.config.HostdevSettings
 import dev.virtmanager.android.libvirt.config.HostInventory
 import dev.virtmanager.android.libvirt.config.OsVariant
 
@@ -64,6 +65,30 @@ class VirshClient(
         while (results.size < commands.size) results += null
         return results
     }
+
+    /**
+     * Runs many virsh commands in one virsh process (one libvirt connection), which is much
+     * faster than one process per command on hosts with many devices or VMs. Each result is the
+     * command's output, or null if it failed or printed nothing.
+     */
+    suspend fun script(commands: List<List<String>>): List<String?> {
+        val marker = "__VMA_SEP__"
+        val results = mutableListOf<String?>()
+        // Keep each virsh argument well below the kernel's 128 KiB limit for one argument.
+        for (chunk in commands.chunked(150)) {
+            val text = chunk.joinToString(" ; ") { cmd -> cmd.joinToString(" ") { virshQuote(it) } + " ; echo $marker" }
+            val r = runner.run(virshCommand(listOf(text)), null)
+            // virsh's echo doesn't end the line, so split on the marker rather than by line.
+            val parts = r.stdout.split(marker)
+            for (i in chunk.indices) results += parts.getOrNull(i)?.trim()?.takeIf { it.isNotEmpty() }
+        }
+        return results
+    }
+
+    /** Quoting for virsh's own command parser (used inside [script]). */
+    private fun virshQuote(arg: String): String =
+        if (arg.isNotEmpty() && arg.all { it.isLetterOrDigit() || it in "_-.:/@+=,%" }) arg
+        else "\"" + arg.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
     private fun cleanError(text: String): String =
         text.lines().map { it.removePrefix("error: ").trim() }.filter { it.isNotEmpty() }
@@ -143,12 +168,23 @@ class VirshClient(
      * Returns the networks that had to be started.
      */
     suspend fun startWithNetworks(name: String): List<String> {
-        val wanted = Parsers.parseDomainXml(dumpXml(name, inactive = true)).interfaces
-            .filter { it.type == "network" }.mapNotNull { it.source }.toSet()
+        val def = Parsers.parseDomainXml(dumpXml(name, inactive = true))
+        val wanted = def.interfaces.filter { it.type == "network" }.mapNotNull { it.source }.toSet()
         val started = if (wanted.isEmpty()) emptyList() else networks().filter { it.name in wanted && !it.active }.map { it.name }
         started.forEach { startNetwork(it) }
         start(name)
+        // The first start is the installation beginning: the VM is no longer "being set up".
+        if (def.setupPending) runCatching { clearSetupMarker(name) }
         return started
+    }
+
+    suspend fun clearSetupMarker(name: String) = virsh("metadata", name, SetupMarker.NS, "--config", "--remove")
+
+    /** Which of the (shut off) VMs [names] still have their setup pending; one virsh call. */
+    suspend fun pendingSetups(names: List<String>): Set<String> {
+        if (names.isEmpty()) return emptySet()
+        val out = script(names.map { listOf("metadata", it, SetupMarker.NS, "--config") })
+        return names.zip(out).filter { it.second != null }.map { it.first }.toSet()
     }
     suspend fun shutdown(name: String) = virsh("shutdown", name)
     suspend fun reboot(name: String) = virsh("reboot", name)
@@ -160,19 +196,104 @@ class VirshClient(
     suspend fun setAutostart(name: String, enabled: Boolean) =
         if (enabled) virsh("autostart", name) else virsh("autostart", "--disable", name)
 
+    /** What [deleteDomain] did; [notDeleted] lists files that are still on the host and why. */
+    data class DeleteReport(val deleted: List<String>, val notDeleted: List<Pair<String, String>>)
+
     /**
-     * Removes the VM definition. [deleteStorage] lists disk targets (e.g. "vda") whose volumes are
-     * deleted too. Only the VM's own disks are passed, never `--remove-all-storage`, so a shared
-     * install ISO attached as a CD-ROM is left alone.
+     * Deletes a VM like virt-manager does, step by step so a failure part-way is reported
+     * accurately: force it off, remove the definition (with managed save, snapshot/checkpoint
+     * metadata, NVRAM and TPM state), then delete each file in [deletePaths] through libvirt.
+     * Files that libvirt doesn't manage, or that are in a stopped pool, are reported rather than
+     * silently left behind.
      */
-    suspend fun undefine(name: String, deleteStorage: List<String> = emptyList()) {
-        val storage = if (deleteStorage.isEmpty()) emptyList() else listOf("--storage", deleteStorage.joinToString(","))
-        val args = listOf("undefine", name, "--managed-save", "--snapshots-metadata", "--nvram") + storage
-        val r = runner.run(virshCommand(args), null)
-        if (!r.ok) {
-            // Older libvirt doesn't know --nvram for BIOS guests; retry with a minimal set.
-            virsh(*(listOf("undefine", name) + storage).toTypedArray())
+    suspend fun deleteDomain(name: String, deletePaths: List<String> = emptyList()): DeleteReport {
+        if (runCatching { domInfo(name).state.isActive }.getOrDefault(false)) runCatching { destroy(name) }
+        undefine(name)
+        val deleted = mutableListOf<String>()
+        val failed = mutableListOf<Pair<String, String>>()
+        for (path in deletePaths.distinct()) {
+            val r = runner.run(virshCommand(listOf("vol-delete", path)), null)
+            when {
+                r.ok -> deleted += path
+                !fileExists(path) -> Unit // already gone
+                else -> failed += path to cleanError(r.stderr).let { err ->
+                    if (err.contains("no storage vol", true) || err.contains("not found", true)) "not in an active storage pool" else err
+                }
+            }
         }
+        return DeleteReport(deleted, failed)
+    }
+
+    private suspend fun fileExists(path: String): Boolean =
+        runner.run("test -e ${Shell.quote(path)}", null).ok
+
+    /**
+     * Removes the definition. Newer flags are dropped one step at a time for older libvirt, and
+     * after every failure we check whether the VM is actually gone (a later step can fail after
+     * the definition was removed).
+     */
+    suspend fun undefine(name: String) {
+        val flagSets = listOf(
+            listOf("--managed-save", "--snapshots-metadata", "--checkpoints-metadata", "--nvram", "--tpm"),
+            listOf("--managed-save", "--snapshots-metadata", "--nvram"),
+            listOf("--nvram"),
+            emptyList(),
+        )
+        var lastError = "undefine failed"
+        for (flags in flagSets) {
+            val r = runner.run(virshCommand(listOf("undefine", name) + flags), null)
+            if (r.ok || !exists(name)) return
+            lastError = cleanError(r.stderr.ifBlank { r.stdout })
+            val unsupported = lastError.contains("doesn't support option", true) || lastError.contains("unsupported flags", true) ||
+                lastError.contains("unknown option", true)
+            if (!unsupported) throw VirshException(lastError)
+        }
+        throw VirshException(lastError)
+    }
+
+    suspend fun exists(name: String): Boolean = runner.run(virshCommand(listOf("domuuid", name)), null).ok
+
+    /** A disk image that deleting the VM can remove; [sharedWith] lists other VMs using it. */
+    data class DiskCandidate(val target: String, val path: String, val sharedWith: List<String>)
+
+    /**
+     * The VM's own disk images (never CD-ROM or floppy media such as install ISOs), read from the
+     * saved configuration at the moment of asking, with the other VMs that use each one.
+     */
+    suspend fun deletionCandidates(name: String): List<DiskCandidate> {
+        val disks = Parsers.parseDomainXml(dumpXml(name, inactive = true)).disks
+            .filter { it.device == "disk" && it.target != null && it.source != null && it.type in setOf("file", "block", "volume") }
+        // A <source pool= volume=> disk is offered by its path, which is what vol-delete takes;
+        // other VMs may refer to it either way.
+        val resolved = disks.mapNotNull { d ->
+            val path = if (d.type == "volume") volumePath(d.source!!) else d.source!!
+            path?.let { Triple(d.target!!, it, setOf(it, d.source)) }
+        }
+        val users = diskUsers(name, resolved.flatMap { it.third })
+        return resolved.map { (target, path, names) -> DiskCandidate(target, path, names.flatMap { users[it].orEmpty() }.distinct()) }
+    }
+
+    /** The file path of a volume given as "pool/volume", or null if it can't be found. */
+    private suspend fun volumePath(poolAndVolume: String): String? {
+        val pool = poolAndVolume.substringBefore('/')
+        val vol = poolAndVolume.substringAfter('/')
+        return runCatching { virsh("vol-path", "--pool", pool, vol).trim() }.getOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * For each of [paths], the other VMs whose (persistent) configuration uses it, so shared
+     * images aren't deleted along with one VM.
+     */
+    suspend fun diskUsers(except: String, paths: List<String>): Map<String, List<String>> {
+        if (paths.isEmpty()) return emptyMap()
+        val names = virsh("list", "--all", "--name").lines().map { it.trim() }.filter { it.isNotEmpty() && it != except }
+        val xmls = script(names.map { listOf("dumpxml", "--inactive", it) })
+        val usage = mutableMapOf<String, MutableList<String>>()
+        names.zip(xmls).forEach { (vm, xml) ->
+            val sources = xml?.let { runCatching { Parsers.parseDomainXml(it).disks.mapNotNull { d -> d.source } }.getOrNull() }.orEmpty()
+            paths.filter { it in sources }.forEach { usage.getOrPut(it) { mutableListOf() } += vm }
+        }
+        return usage
     }
 
     suspend fun rename(name: String, newName: String) = virsh("domrename", name, newName)
@@ -269,15 +390,26 @@ class VirshClient(
     /** Saves an edited configuration of [name]; the identity checks of [redefine] apply. */
     suspend fun saveConfig(name: String, config: DomainConfig) = redefine(name, config.uuid, config.toXml())
 
-    /** Host USB devices and PCI devices that can be passed through. */
+    /**
+     * Host USB or PCI devices that can be passed through, in address order. Every device libvirt
+     * reports is returned (virt-manager shows them all too); [HostDevice.isBridge] marks the ones
+     * that make no sense to assign.
+     */
     suspend fun hostDevices(type: String): List<HostDevice> {
         val cap = if (type == "usb") "usb_device" else "pci"
         val names = virsh("nodedev-list", "--cap", cap).lines().map { it.trim() }.filter { it.isNotEmpty() }
         if (names.isEmpty()) return emptyList()
-        return batch(*names.map { listOf("nodedev-dumpxml", it) }.toTypedArray())
-            .mapNotNull { it?.let(HostInventory::parseNodedev) }
-            // Root hubs can't be passed through.
-            .filterNot { it.type == "usb" && it.settings.vendorId == "0x1d6b" }
+        val xmls = script(names.map { listOf("nodedev-dumpxml", it) })
+        val devices = names.zip(xmls).map { (name, xml) ->
+            xml?.let(HostInventory::parseNodedev)
+                // Never drop a device just because its details couldn't be read.
+                ?: HostDevice(type, name, name, null, null, null, "details unavailable", settings = HostdevSettings(type))
+        }.filterNot { it.type == "usb" && it.vendorId == "0x1d6b" } // root hubs can't be passed through
+        // Identical USB devices can only be told apart by bus/device address.
+        val dupes = devices.filter { it.type == "usb" }.groupBy { "${it.vendorId}:${it.productId}" }.filter { it.value.size > 1 }.keys
+        return devices.map { d ->
+            if (d.type == "usb" && "${d.vendorId}:${d.productId}" in dupes) d.copy(settings = d.settings.copy(pinUsbAddress = true)) else d
+        }.sortedBy { it.address }
     }
 
     /** OS variants from the host's libosinfo, or a built-in list if it isn't installed. */

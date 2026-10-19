@@ -50,6 +50,7 @@ import dev.virtmanager.android.data.DomainMetrics
 import dev.virtmanager.android.libvirt.DomainState
 import dev.virtmanager.android.libvirt.DomainStats
 import dev.virtmanager.android.ui.components.ConfirmDialog
+import dev.virtmanager.android.ui.components.DeleteReportDialog
 import dev.virtmanager.android.ui.components.DeleteVmDialog
 import dev.virtmanager.android.ui.components.DomainAction
 import dev.virtmanager.android.ui.components.EmptyState
@@ -129,6 +130,7 @@ fun MachinesTab(
                         domain = d,
                         metrics = state.metrics[d.name] ?: DomainMetrics(),
                         busy = d.name in state.busy,
+                        setupPending = d.name in state.pendingSetup && !d.state.isActive,
                         onClick = { onOpenVm(d.name) },
                         onConsole = { onConsole(d.name) },
                         onAction = { act(d.name, it) },
@@ -145,10 +147,12 @@ fun MachinesTab(
             name = req.name,
             running = req.running,
             disks = req.disks,
+            lookupError = req.lookupError,
             onConfirm = vm::confirmDelete,
             onDismiss = vm::cancelDelete,
         )
     }
+    state.deleteReport?.let { DeleteReportDialog(it, onDismiss = vm::dismissDeleteReport) }
 
     pending?.let { (name, action) ->
         ConfirmDialog(
@@ -167,6 +171,7 @@ private fun VmCard(
     domain: DomainStats,
     metrics: DomainMetrics,
     busy: Boolean,
+    setupPending: Boolean,
     onClick: () -> Unit,
     onConsole: () -> Unit,
     onAction: (DomainAction) -> Unit,
@@ -193,12 +198,19 @@ private fun VmCard(
                 Column(Modifier.weight(1f)) {
                     Text(domain.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(4.dp))
-                    StateBadge(domain.state)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StateBadge(domain.state)
+                        if (setupPending) {
+                            Spacer(Modifier.width(8.dp))
+                            SetupPendingBadge()
+                        }
+                    }
                 }
                 if (busy) {
                     CircularProgressIndicator(Modifier.size(24.dp).padding(2.dp), strokeWidth = 2.5.dp)
                     Spacer(Modifier.width(8.dp))
-                } else {
+                } else if (!setupPending) {
+                    // An unfinished setup is resumed on its page (Begin installation) instead.
                     DomainAction.primaryFor(domain.state)?.let { primary ->
                         FilledTonalIconButton(onClick = { onAction(primary) }) { Icon(primary.icon, primary.label) }
                     }
@@ -263,5 +275,20 @@ private fun VmCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SetupPendingBadge() {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+    ) {
+        Text(
+            "Setup not finished",
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
     }
 }

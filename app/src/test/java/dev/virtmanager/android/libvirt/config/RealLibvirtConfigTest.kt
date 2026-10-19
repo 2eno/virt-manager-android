@@ -225,4 +225,13 @@ class RealLibvirtConfigTest {
         virsh.startWithNetworks(vm)
         assertEquals("running", local.run("virsh -c $uri domstate $vm", null).stdout.trim())
     }
+
+    @Test fun hostDevicesMatchNodedevList() = runBlocking<Unit> {
+        for ((type, cap) in listOf("pci" to "pci", "usb" to "usb_device")) {
+            val expected = local.run("virsh -q -c $uri nodedev-list --cap $cap", null).stdout.lines().filter { it.isNotBlank() }
+            val listed = virsh.hostDevices(type)
+            println("$type: nodedev-list=${expected.size} app=${listed.size} ${listed.map { it.description }}")
+            assertEquals("every $type device must be offered", expected.size, listed.size)
+        }
+    }
 }

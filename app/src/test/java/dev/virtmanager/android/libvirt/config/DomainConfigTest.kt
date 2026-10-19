@@ -143,14 +143,93 @@ class DomainConfigTest {
             "<device><name>usb_1_3</name><capability type='usb_device'><bus>1</bus><device>3</device>" +
                 "<product id='0xc52b'>Unifying Receiver</product><vendor id='0x046d'>Logitech, Inc.</vendor></capability></device>",
         )!!
-        assertEquals("001:003 Logitech, Inc. Unifying Receiver", usb.description)
+        assertEquals("Bus 001 Device 003: Logitech, Inc. Unifying Receiver [046d:c52b]", usb.description)
         assertEquals("0x046d", usb.settings.vendorId)
+        assertEquals(1, usb.settings.usbBus)
+        assertTrue(usb.settings.matches(usb))
         val pci = HostInventory.parseNodedev(
             "<device><name>pci_0000_01_00_0</name><capability type='pci'><class>0x030000</class><domain>0</domain><bus>1</bus><slot>0</slot>" +
                 "<function>0</function><product id='0x2484'>GA104</product><vendor id='0x10de'>NVIDIA Corporation</vendor></capability></device>",
         )!!
         assertEquals("0000:01:00.0", pci.settings.pciAddress)
+        assertEquals("0000:01:00.0 VGA compatible controller: NVIDIA Corporation GA104 [10de:2484]", pci.description)
         assertTrue(pci.settings.toXml(alma()).contains("bus='0x01'"))
+        assertTrue(!pci.isBridge)
+
+        // Without the host's ID databases libvirt reports no names: still recognisable.
+        val bridge = HostInventory.parseNodedev(
+            "<device><name>pci_0000_00_1c_0</name><driver><name>pcieport</name></driver><capability type='pci'><class>0x060400</class>" +
+                "<domain>0</domain><bus>0</bus><slot>28</slot><function>0</function><product id='0xa110'/><vendor id='0x8086'/>" +
+                "<iommuGroup number='7'><address domain='0x0000' bus='0x00' slot='0x1c' function='0x0'/>" +
+                "<address domain='0x0000' bus='0x00' slot='0x1c' function='0x4'/></iommuGroup>" +
+                "<capability type='pci-bridge'/></capability></device>",
+        )!!
+        assertEquals("0000:00:1c.0 PCI bridge: Intel Corporation [8086:a110]", bridge.description)
+        assertTrue(bridge.isBridge)
+        assertEquals("pcieport", bridge.driver)
+        assertEquals(7, bridge.iommuGroup)
+        assertEquals(listOf("0000:00:1c.4"), bridge.groupMembers)
+    }
+
+    @Test fun usbDevicePinnedByAddressOnlyWhenAmbiguous() {
+        val plain = HostdevSettings("usb", vendorId = "0x046d", productId = "0xc52b", usbBus = 1, usbDevice = 3)
+        assertTrue(!plain.toXml(alma()).contains("<address"))
+        val pinned = plain.copy(pinUsbAddress = true)
+        assertTrue(pinned.toXml(alma()).contains("<address bus='1' device='3'/>"))
+        val read = HostdevSettings.read(Dom.parse(pinned.toXml(alma())).documentElement)
+        assertEquals(pinned, read)
+    }
+
+    @Test fun deviceLabelsAreUnique() {
+        val cfg = alma()
+        cfg.addDevice("<video><model type='virtio'/></video>")
+        cfg.addDevice("<video><model type='virtio'/></video>")
+        val labels = cfg.devices().map { it.label }
+        assertEquals(labels.size, labels.toSet().size)
+        assertTrue(labels.toString(), "Video Virtio 2" in labels)
+    }
+
+    @Test fun graphicsEditKeepsOtherAttributes() {
+        val cfg = alma()
+        val idx = cfg.addDevice("<graphics type='vnc' port='-1' autoport='yes' keymap='de' sharePolicy='force-shared'><listen type='address' address='127.0.0.1'/></graphics>")
+        val el = cfg.deviceElement(idx)!!
+        GraphicsSettings.read(el).copy(password = "secret").apply(el, cfg)
+        assertEquals("de", el.getAttribute("keymap"))
+        assertEquals("force-shared", el.getAttribute("sharePolicy"))
+        assertEquals("secret", el.getAttribute("passwd"))
+        // VNC-only settings go when switching to Spice.
+        GraphicsSettings.read(el).copy(type = "spice").apply(el, cfg)
+        assertEquals("", el.getAttribute("sharePolicy"))
+        assertEquals("de", el.getAttribute("keymap"))
+
+        val sock = cfg.addDevice("<graphics type='vnc'><listen type='socket' socket='/run/vnc.sock'/></graphics>")
+        val s = GraphicsSettings.read(cfg.deviceElement(sock)!!)
+        assertEquals(GraphicsSettings.SOCKET, s.listen)
+        s.copy(password = "pw").apply(cfg.deviceElement(sock)!!, cfg)
+        assertTrue(cfg.deviceXml(sock)!!, cfg.deviceXml(sock)!!.contains("/run/vnc.sock"))
+    }
+
+    @Test fun interfaceKinds() {
+        val cfg = alma()
+        val user = InterfaceSettings("user", "", "virtio").toXml(cfg)
+        assertTrue(user, !user.contains("<source"))
+        val idx = cfg.addDevice(user)
+        assertEquals(InterfaceSettings("user", "", "virtio"), InterfaceSettings.read(cfg.deviceElement(idx)!!))
+        val other = cfg.addDevice("<interface type='vhostuser'><source type='unix' path='/s' mode='client'/><model type='virtio'/></interface>")
+        assertEquals(null, DeviceSettings.read(cfg.deviceElement(other)!!))
+
+        // Changing only the model keeps the source's extra attributes.
+        val pg = cfg.addDevice("<interface type='network'><source network='default' portgroup='lan'/><model type='virtio'/></interface>")
+        InterfaceSettings.read(cfg.deviceElement(pg)!!)!!.copy(model = "e1000e").apply(cfg.deviceElement(pg)!!, cfg)
+        assertTrue(cfg.deviceElement(pg)!!.child("source")?.attr("portgroup") == "lan")
+        val mv = cfg.addDevice("<interface type='direct'><source dev='eth0' mode='vepa'/><model type='virtio'/></interface>")
+        assertEquals("vepa", InterfaceSettings.read(cfg.deviceElement(mv)!!)!!.directMode)
+    }
+
+    @Test fun tabletNeverOnPs2() {
+        assertEquals(listOf("usb", "virtio"), InputSettings.busesFor("tablet", "x86_64"))
+        assertEquals(listOf("usb", "virtio", "ps2"), InputSettings.busesFor("mouse", "x86_64"))
+        assertEquals(listOf("usb", "virtio"), InputSettings.busesFor("keyboard", "aarch64"))
     }
 
     @Test fun capabilitiesFilterOptions() {

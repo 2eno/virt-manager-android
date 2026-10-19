@@ -10,10 +10,14 @@ import dev.virtmanager.android.libvirt.NewVmSpec
 import dev.virtmanager.android.libvirt.StoragePool
 import dev.virtmanager.android.libvirt.StorageVolume
 import dev.virtmanager.android.libvirt.VirtualNetwork
+import dev.virtmanager.android.libvirt.config.DomainCapabilities
+import dev.virtmanager.android.libvirt.OsFamily
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class NewVmEnv(
     val loading: Boolean = true,
@@ -27,6 +31,10 @@ data class NewVmEnv(
     /** Linux bridges on the host; null if they couldn't be listed (then any name is accepted). */
     val bridges: List<String>? = null,
     val virtType: String = "kvm",
+    /** The hypervisor can emulate a TPM (swtpm installed); Windows 11 needs one. */
+    val tpmEmulator: Boolean = false,
+    /** qemu:///session and friends: no libvirt networks or bridges, user-mode networking instead. */
+    val session: Boolean = false,
     val progress: String? = null,
     val error: String? = null,
     val created: Created? = null,
@@ -53,6 +61,11 @@ class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: 
                 val libvirtBridges = nets.mapNotNull { n -> runCatching { v.networkDetails(n.name).bridge }.getOrNull() }.toSet()
                 val bridges = runCatching { v.hostBridges(libvirtBridges) }.getOrNull()
                 val virtType = if (v.supportsKvm()) "kvm" else "qemu"
+                val caps = runCatching {
+                    DomainCapabilities.parse(v.virsh("domcapabilities", "--virttype", virtType))
+                }.getOrNull()
+                val tpm = caps?.values("tpm", "backendModel")?.contains("emulator") == true
+                val session = details.uri?.endsWith("/session") == true
                 val names = runCatching { v.pollHost().domains.map { it.name }.toSet() }.getOrDefault(emptySet())
                 _env.update {
                     it.copy(
@@ -65,6 +78,8 @@ class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: 
                         isos = isos,
                         bridges = bridges,
                         virtType = virtType,
+                        tpmEmulator = tpm,
+                        session = session,
                         existingNames = names,
                     )
                 }
@@ -80,14 +95,21 @@ class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: 
      * it is started later from its details page ("Begin installation").
      */
     fun create(spec: NewVmSpec, diskGiB: Int?, pool: String?, start: Boolean, customize: Boolean) = viewModelScope.launch {
+        // Leaving the screen must not stop creation half-way (a disk without a VM, or a rollback
+        // that never runs), so the steps below finish even if this ViewModel is cleared.
+        withContext(NonCancellable) { createSteps(spec, diskGiB, pool, start, customize) }
+    }
+
+    private suspend fun createSteps(spec: NewVmSpec, diskGiB: Int?, pool: String?, start: Boolean, customize: Boolean) {
         _env.update { it.copy(error = null) }
         val v = try {
             app.connections.connect(connectionId).virsh
         } catch (t: Throwable) {
             _env.update { it.copy(error = ConnectionManager.friendly(t)) }
-            return@launch
+            return
         }
         var createdVolume: Pair<String, String>? = null
+        val windows = spec.osFamily == OsFamily.WINDOWS
         try {
             preflight(spec)
             var diskPath: String? = null
@@ -99,11 +121,20 @@ class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: 
                 createdVolume = pool to volName
             }
             _env.update { it.copy(progress = "Defining virtual machine…") }
-            v.defineXml(DomainXmlBuilder.build(spec.copy(diskPath = diskPath, virtType = _env.value.virtType)))
+            v.defineXml(
+                DomainXmlBuilder.build(
+                    spec.copy(
+                        diskPath = diskPath,
+                        virtType = _env.value.virtType,
+                        setupPending = customize,
+                        tpm = windows && _env.value.tpmEmulator,
+                    ),
+                ),
+            )
         } catch (t: Throwable) {
             createdVolume?.let { (p, vol) -> runCatching { v.deleteVolume(p, vol) } }
             _env.update { it.copy(progress = null, error = ConnectionManager.friendly(t)) }
-            return@launch
+            return
         }
 
         // From here on the VM exists; failures are reported on its page, not in the wizard.
@@ -136,7 +167,7 @@ class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: 
                 if (_env.value.networks.none { it.name == net.network }) {
                     throw IllegalArgumentException("Virtual network \"${net.network}\" doesn't exist")
                 }
-            NetworkSource.None -> Unit
+            NetworkSource.User, NetworkSource.None -> Unit
         }
     }
 

@@ -115,6 +115,8 @@ data class DomainDefinition(
     val videoModel: String?,
     val hasSerialConsole: Boolean,
     val hasGuestAgentChannel: Boolean,
+    /** Created with "Customize configuration before install" and never started since. */
+    val setupPending: Boolean = false,
 ) {
     val vnc: GraphicsDevice? get() = graphics.firstOrNull { it.type == "vnc" }
 }
@@ -189,3 +191,13 @@ data class Snapshot(
 )
 
 class VirshException(message: String) : Exception(message)
+
+/**
+ * Marks a VM whose creation isn't finished: defined by the New VM wizard for "Customize
+ * configuration before install" and not started yet. Stored in the domain's libvirt metadata so
+ * the app (on any device) can offer Begin/Cancel installation later.
+ */
+object SetupMarker {
+    const val NS = "https://github.com/2eno/virt-manager-android/xmlns/setup/1.0"
+    const val XML = "<vma:setup xmlns:vma=\"$NS\" state=\"customizing\"/>"
+}

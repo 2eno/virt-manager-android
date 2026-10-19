@@ -302,11 +302,19 @@ class DomainConfig private constructor(internal val doc: Document) {
 
     fun deviceXml(index: Int): String? = deviceElement(index)?.let(Dom::serialize)
 
+    /**
+     * The devices virt-manager lists. Labels are unique (pages are found again by label after
+     * the configuration changed): a repeated one, e.g. a second "Video Virtio", gets " 2".
+     */
     fun devices(): List<Device> {
         val counters = mutableMapOf<String, Int>()
         fun next(key: String) = counters.merge(key, 1, Int::plus)!!
+        val seen = mutableMapOf<String, Int>()
         return devicesEl.elements().mapIndexedNotNull { i, el ->
-            if (hidden(el)) null else Device(i, el.tagName, label(el, ::next), removable(el))
+            if (hidden(el)) return@mapIndexedNotNull null
+            val base = label(el, ::next)
+            val n = seen.merge(base, 1, Int::plus)!!
+            Device(i, el.tagName, if (n == 1) base else "$base $n", removable(el))
         }
     }
 

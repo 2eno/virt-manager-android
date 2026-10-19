@@ -122,24 +122,22 @@ data class DiskSettings(
 // --- Network --------------------------------------------------------------------------------
 
 data class InterfaceSettings(
-    val kind: String = "network",         // network, bridge, direct (macvtap)
-    val source: String = "default",
+    val kind: String = "network",         // network, bridge, direct (macvtap), user
+    val source: String = "default",       // network / bridge / host device; unused for user
     val model: String = "virtio",
     val mac: String? = null,              // null = let libvirt generate one
     val linkUp: Boolean = true,
+    val directMode: String = "bridge",    // macvtap mode: bridge, vepa, private, passthrough
 ) : DeviceSettings {
     override fun apply(el: Element, cfg: DomainConfig) {
+        val before = read(el)
         el.setAttribute("type", kind)
-        el.removeChildren("source")
-        el.removeChildren("target")
-        el.removeChildren("alias")
-        val src = el.ownerDocument.createElement("source")
-        when (kind) {
-            "network" -> src.setAttribute("network", source)
-            "bridge" -> src.setAttribute("bridge", source)
-            "direct" -> { src.setAttribute("dev", source); src.setAttribute("mode", "bridge") }
+        // Rebuild <source> only when it changes, so e.g. a portgroup or the passt backend stays.
+        if (before == null || before.kind != kind || before.source != source || before.directMode != directMode) {
+            el.removeChildren("source")
+            if (before?.kind != kind) el.removeChildren("target")
+            sourceElement(el)?.let { el.insertBefore(it, el.child("mac")?.nextSibling ?: el.firstChild) }
         }
-        el.insertBefore(src, el.child("mac")?.nextSibling ?: el.firstChild)
         val m = el.ensure("model")
         if (m.attr("type") != model) {
             m.setAttribute("type", model)
@@ -149,13 +147,24 @@ data class InterfaceSettings(
         if (linkUp) el.removeChildren("link") else el.ensure("link").setAttribute("state", "down")
     }
 
+    private fun sourceElement(el: Element): Element? {
+        val src = el.ownerDocument.createElement("source")
+        when (kind) {
+            "network" -> src.setAttribute("network", source)
+            "bridge" -> src.setAttribute("bridge", source)
+            "direct" -> { src.setAttribute("dev", source); src.setAttribute("mode", directMode) }
+            else -> return null // usermode networking has no source
+        }
+        return src
+    }
+
     override fun toXml(cfg: DomainConfig): String = buildString {
         append("<interface type='${esc(kind)}'>")
         if (!mac.isNullOrBlank()) append("<mac address='${esc(mac.lowercase())}'/>")
         when (kind) {
             "network" -> append("<source network='${esc(source)}'/>")
             "bridge" -> append("<source bridge='${esc(source)}'/>")
-            "direct" -> append("<source dev='${esc(source)}' mode='bridge'/>")
+            "direct" -> append("<source dev='${esc(source)}' mode='${esc(directMode)}'/>")
         }
         append("<model type='${esc(model)}'/>")
         if (!linkUp) append("<link state='down'/>")
@@ -163,23 +172,29 @@ data class InterfaceSettings(
     }
 
     companion object {
+        val kinds = listOf("network", "bridge", "direct", "user")
         val models = listOf("virtio", "e1000e", "e1000", "rtl8139")
+        val directModes = listOf("bridge", "vepa", "private", "passthrough")
         private val macRegex = Regex("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
         fun isValidMac(mac: String) = macRegex.matches(mac)
 
-        fun read(el: Element): InterfaceSettings {
+        /** Null for interface types without a form here (vhostuser, ethernet, hostdev …): XML only. */
+        fun read(el: Element): InterfaceSettings? {
             val kind = el.attr("type") ?: "network"
+            if (kind !in kinds) return null
             val src = el.child("source")
             return InterfaceSettings(
                 kind = kind,
                 source = when (kind) {
                     "network" -> src?.attr("network")
                     "bridge" -> src?.attr("bridge")
-                    else -> src?.attr("dev")
+                    "direct" -> src?.attr("dev")
+                    else -> null
                 }.orEmpty(),
                 model = el.child("model")?.attr("type") ?: "virtio",
                 mac = el.child("mac")?.attr("address"),
                 linkUp = el.child("link")?.attr("state") != "down",
+                directMode = src?.attr("mode") ?: "bridge",
             )
         }
     }
@@ -197,6 +212,11 @@ data class InputSettings(val type: String = "tablet", val bus: String = "usb") :
     companion object {
         val types = listOf("tablet", "mouse", "keyboard")
         val buses = listOf("usb", "virtio", "ps2")
+
+        /** QEMU has no PS/2 tablet, and PS/2 exists only on x86 machines. */
+        fun busesFor(type: String, arch: String?): List<String> =
+            if (type == "tablet" || (arch != null && arch !in setOf("x86_64", "i686"))) listOf("usb", "virtio") else buses
+
         fun read(el: Element) = InputSettings(el.attr("type") ?: "tablet", el.attr("bus") ?: "usb")
     }
 }
@@ -210,18 +230,31 @@ data class GraphicsSettings(
     val openGl: Boolean = false,          // spice only
 ) : DeviceSettings {
     override fun apply(el: Element, cfg: DomainConfig) {
-        val keep = el.attributes.let { a -> (0 until a.length).map { a.item(it).nodeName } }
-        keep.forEach { el.removeAttribute(it) }
+        // Only the attributes this form edits are rewritten; keymap, sharePolicy, passwdValidTo …
+        // stay. Switching VNC <-> Spice drops what only the other protocol understands.
+        val managed = listOf("port", "autoport", "listen", "passwd", "socket")
+        val typeSpecific = if (el.attr("type") != type) listOf("tlsPort", "defaultMode", "sharePolicy", "websocket", "powerControl") else emptyList()
+        (managed + typeSpecific).forEach { el.removeAttribute(it) }
+        if (typeSpecific.isNotEmpty()) {
+            listOf("channel", "image", "jpeg", "zlib", "playback", "streaming", "clipboard", "mouse", "filetransfer").forEach { el.removeChildren(it) }
+        }
+        val socketPath = el.child("listen")?.takeIf { it.attr("type") == "socket" }?.attr("socket")
         el.removeChildren("listen")
         el.removeChildren("gl")
         el.setAttribute("type", type)
-        fill(el)
+        fill(el, socketPath)
     }
 
-    private fun fill(el: Element) {
+    private fun fill(el: Element, socketPath: String? = null) {
         val doc = el.ownerDocument
         if (listen == "none") {
             el.appendChild(doc.createElement("listen").apply { setAttribute("type", "none") })
+        } else if (listen == SOCKET) {
+            // A UNIX socket on the host; libvirt picks the path unless one was set before.
+            el.appendChild(doc.createElement("listen").apply {
+                setAttribute("type", "socket")
+                if (socketPath != null) setAttribute("socket", socketPath)
+            })
         } else {
             if (autoport || port == null) { el.setAttribute("port", "-1"); el.setAttribute("autoport", "yes") }
             else { el.setAttribute("port", port.toString()); el.setAttribute("autoport", "no") }
@@ -239,12 +272,17 @@ data class GraphicsSettings(
     }
 
     companion object {
+        const val SOCKET = "socket"
+
         fun read(el: Element): GraphicsSettings {
             val listenEl = el.child("listen")
-            val none = listenEl?.attr("type") == "none"
             return GraphicsSettings(
                 type = el.attr("type") ?: "vnc",
-                listen = if (none) "none" else listenEl?.attr("address") ?: el.attr("listen") ?: "127.0.0.1",
+                listen = when (listenEl?.attr("type")) {
+                    "none" -> "none"
+                    "socket" -> SOCKET
+                    else -> listenEl?.attr("address") ?: el.attr("listen") ?: "127.0.0.1"
+                },
                 autoport = el.attr("autoport") != "no",
                 port = el.attr("port")?.toIntOrNull()?.takeIf { it > 0 },
                 password = el.attr("passwd"),
@@ -496,19 +534,27 @@ data class SmartcardSettings(val mode: String = "passthrough") : DeviceSettings 
         if (mode == "passthrough") "<smartcard mode='passthrough' type='spicevmc'/>" else "<smartcard mode='host'/>"
 }
 
-/** A host USB or PCI device passed through to the guest. */
+/**
+ * A host USB or PCI device passed through to the guest. USB devices are matched by vendor and
+ * product; [usbBus]/[usbDevice] are added when several identical devices are plugged in, which
+ * libvirt otherwise refuses to start ("multiple USB devices for ...").
+ */
 data class HostdevSettings(
     val type: String,                     // usb, pci
     val vendorId: String? = null,         // usb
     val productId: String? = null,        // usb
     val pciAddress: String? = null,       // pci, "0000:01:00.0"
-    val description: String? = null,
+    val usbBus: Int? = null,
+    val usbDevice: Int? = null,
+    val pinUsbAddress: Boolean = false,
 ) : DeviceSettings {
     override fun apply(el: Element, cfg: DomainConfig) = Unit // the source is chosen when adding
 
     override fun toXml(cfg: DomainConfig): String = when (type) {
         "usb" -> "<hostdev mode='subsystem' type='usb' managed='yes'><source>" +
-            "<vendor id='${esc(vendorId.orEmpty())}'/><product id='${esc(productId.orEmpty())}'/></source></hostdev>"
+            "<vendor id='${esc(vendorId.orEmpty())}'/><product id='${esc(productId.orEmpty())}'/>" +
+            (if (pinUsbAddress && usbBus != null && usbDevice != null) "<address bus='$usbBus' device='$usbDevice'/>" else "") +
+            "</source></hostdev>"
         else -> {
             val (dom, rest) = pciAddress.orEmpty().split(":", limit = 2).let { if (it.size == 2) it[0] to it[1] else "0000" to it[0] }
             val (bus, slotFn) = rest.split(":").let { it.getOrElse(0) { "00" } to it.getOrElse(1) { "00.0" } }
@@ -518,17 +564,28 @@ data class HostdevSettings(
         }
     }
 
+    /** Whether this configured device refers to [d] on the host. */
+    fun matches(d: HostDevice): Boolean = when (type) {
+        "pci" -> d.type == "pci" && pciAddress == d.address
+        else -> d.type == "usb" && vendorId.equals(d.vendorId, true) && productId.equals(d.productId, true) &&
+            (usbBus == null || (usbBus == d.settings.usbBus && usbDevice == d.settings.usbDevice))
+    }
+
     companion object {
         fun read(el: Element): HostdevSettings {
             val src = el.child("source")
+            val addr = src?.child("address")
             return HostdevSettings(
                 type = el.attr("type") ?: "usb",
                 vendorId = src?.child("vendor")?.attr("id"),
                 productId = src?.child("product")?.attr("id"),
-                pciAddress = src?.child("address")?.let { a ->
+                pciAddress = if (el.attr("type") == "pci") addr?.let { a ->
                     fun h(n: String) = a.attr(n)?.removePrefix("0x")?.toIntOrNull(16) ?: 0
-                    "%04x:%02x:%02x.%x".format(h("domain"), h("bus"), h("slot"), h("function"))
-                },
+                    HostInventory.pciAddress(h("domain"), h("bus"), h("slot"), h("function"))
+                } else null,
+                usbBus = if (el.attr("type") == "usb") addr?.attr("bus")?.toIntOrNull() else null,
+                usbDevice = if (el.attr("type") == "usb") addr?.attr("device")?.toIntOrNull() else null,
+                pinUsbAddress = el.attr("type") == "usb" && addr != null,
             )
         }
     }

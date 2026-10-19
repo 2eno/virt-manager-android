@@ -1,5 +1,6 @@
 package dev.virtmanager.android.ui.create
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
@@ -99,13 +100,18 @@ fun NewVmScreen(connectionId: String, onDone: (Created?) -> Unit) {
     LaunchedEffect(env.loading) {
         if (!env.loading) {
             if (pool == null) pool = env.pools.firstOrNull { it.name == "default" }?.name ?: env.pools.firstOrNull()?.name
-            if (network == null) network = env.networks.firstOrNull { it.name == "default" }?.let { "net:${it.name}" }
-                ?: env.networks.firstOrNull()?.let { "net:${it.name}" } ?: "br:"
+            if (network == null) network = when {
+                env.session -> "user"
+                else -> env.networks.firstOrNull { it.name == "default" }?.let { "net:${it.name}" }
+                    ?: env.networks.firstOrNull()?.let { "net:${it.name}" } ?: "user"
+            }
             if (bridge.isEmpty()) bridge = env.bridges?.firstOrNull().orEmpty()
             if (env.arch == "aarch64") uefi = true
         }
     }
     LaunchedEffect(env.created) { env.created?.let { onDone(it) } }
+    // While the VM is being created, stay here so the outcome (or its error) is shown.
+    BackHandler(enabled = env.progress != null) {}
     LaunchedEffect(os) {
         if (os == OsFamily.WINDOWS) {
             if (memMiB < 4096) memMiB = 4096f
@@ -143,6 +149,7 @@ fun NewVmScreen(connectionId: String, onDone: (Created?) -> Unit) {
         installMediaPath = media.ifBlank { null },
         network = when {
             network == "none" -> NetworkSource.None
+            network == "user" -> NetworkSource.User
             network?.startsWith("br:") == true -> NetworkSource.Bridge(bridge.trim())
             network?.startsWith("net:") == true -> NetworkSource.Virtual(network!!.removePrefix("net:"))
             else -> NetworkSource.None
@@ -164,7 +171,7 @@ fun NewVmScreen(connectionId: String, onDone: (Created?) -> Unit) {
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = { if (step > 0) step-- else onDone(null) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = { if (step > 0) step-- else onDone(null) }, enabled = env.progress == null) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
             )
         },
@@ -174,7 +181,7 @@ fun NewVmScreen(connectionId: String, onDone: (Created?) -> Unit) {
                     Modifier.fillMaxWidth().navigationBarsPadding().padding(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    OutlinedButton(onClick = { if (step > 0) step-- else onDone(null) }, modifier = Modifier.weight(1f)) {
+                    OutlinedButton(onClick = { if (step > 0) step-- else onDone(null) }, enabled = env.progress == null, modifier = Modifier.weight(1f)) {
                         Text(if (step == 0) "Cancel" else "Back")
                     }
                     if (step < stepTitles.lastIndex) {
@@ -338,6 +345,11 @@ fun NewVmScreen(connectionId: String, onDone: (Created?) -> Unit) {
                                     modifier = Modifier.fillMaxWidth(),
                                 )
                             }
+                            ChoiceRow(
+                                "Usermode networking",
+                                "Outgoing access through QEMU; works without host setup" + if (env.session) " (recommended for session connections)" else "",
+                                network == "user",
+                            ) { network = "user" }
                             ChoiceRow("No network", null, network == "none") { network = "none" }
 
                             if (env.arch != "aarch64") {
@@ -362,9 +374,11 @@ fun NewVmScreen(connectionId: String, onDone: (Created?) -> Unit) {
                                 InfoRow("Network", when (val n = spec.network) {
                                     is NetworkSource.Virtual -> n.network
                                     is NetworkSource.Bridge -> "Bridge ${n.bridge}"
+                                    NetworkSource.User -> "Usermode networking"
                                     NetworkSource.None -> "None"
                                 })
                                 InfoRow("Firmware", spec.firmware.name)
+                                if (spec.osFamily == OsFamily.WINDOWS) InfoRow("TPM", if (env.tpmEmulator) "Emulated TPM 2.0" else "None (swtpm not installed on the host)")
                                 InfoRow("Architecture", spec.arch)
                             }
                         }

@@ -12,14 +12,15 @@ import dev.virtmanager.android.libvirt.DomainStats
 import dev.virtmanager.android.libvirt.Snapshot
 import dev.virtmanager.android.libvirt.Parsers
 import dev.virtmanager.android.libvirt.VirshClient
-import dev.virtmanager.android.ui.components.deletableDisks
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class VmUiState(
     val name: String,
@@ -33,7 +34,15 @@ data class VmUiState(
     val error: String? = null,
     val message: String? = null,
     val deleted: Boolean = false,
-    /** Created with "Customize configuration before install" and not started yet. */
+    /** Disk images offered by the delete dialog; null while loading. */
+    val deleteCandidates: List<VirshClient.DiskCandidate>? = null,
+    val deleteLookupError: String? = null,
+    /** Files a deletion couldn't remove, shown before leaving the page. */
+    val deleteReport: VirshClient.DeleteReport? = null,
+    /**
+     * The VM's setup isn't finished (created with "Customize configuration before install" and
+     * never started); comes from the marker in its metadata, so it survives leaving the page.
+     */
     val customizing: Boolean = false,
     /** Set after Begin installation succeeds; the screen opens the console and clears it. */
     val openConsole: Boolean = false,
@@ -96,7 +105,8 @@ class VmDetailViewModel(
     fun reloadDefinition() = viewModelScope.launch {
         try {
             val xml = virsh().dumpXml(name)
-            _state.update { it.copy(xml = xml, definition = Parsers.parseDomainXml(xml)) }
+            val def = Parsers.parseDomainXml(xml)
+            _state.update { it.copy(xml = xml, definition = def, customizing = def.setupPending) }
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t)) }
         }
@@ -133,17 +143,33 @@ class VmDetailViewModel(
         }
     }
 
-    fun delete(deleteStorage: List<String>) = viewModelScope.launch {
-        _state.update { it.copy(busy = true) }
+    /** Looks up the disk images the delete dialog offers (current config, shared-use check). */
+    fun loadDeleteCandidates() = viewModelScope.launch {
+        _state.update { it.copy(deleteCandidates = null, deleteLookupError = null) }
         try {
-            val v = virsh()
-            if (_state.value.stats?.state?.isActive == true) v.destroy(name)
-            v.undefine(name, deleteStorage)
-            _state.update { it.copy(deleted = true) }
+            _state.update { it.copy(deleteCandidates = virsh().deletionCandidates(name)) }
         } catch (t: Throwable) {
-            _state.update { it.copy(error = ConnectionManager.friendly(t), busy = false) }
+            _state.update { it.copy(deleteLookupError = ConnectionManager.friendly(t), deleteCandidates = emptyList()) }
         }
     }
+
+    /** Deletes the VM and the disk images at [deletePaths]. */
+    fun delete(deletePaths: List<String>) = viewModelScope.launch {
+        // Finish even if the user leaves the page meanwhile: half a deletion helps nobody.
+        withContext(NonCancellable) {
+            _state.update { it.copy(busy = true, error = null) }
+            stopPolling()
+            try {
+                val report = virsh().deleteDomain(name, deletePaths)
+                _state.update { it.copy(busy = false, deleted = true, deleteReport = report.takeIf { r -> r.notDeleted.isNotEmpty() }) }
+            } catch (t: Throwable) {
+                _state.update { it.copy(error = ConnectionManager.friendly(t), busy = false) }
+                startPolling()
+            }
+        }
+    }
+
+    fun dismissDeleteReport() = _state.update { it.copy(deleteReport = null) }
 
     fun loadSnapshots() = viewModelScope.launch {
         try {
@@ -189,18 +215,20 @@ class VmDetailViewModel(
 
     fun consoleOpened() = _state.update { it.copy(openConsole = false) }
 
-    /** virt-manager's "Cancel installation": removes the VM and the disk images it was given. */
+    /**
+     * virt-manager's "Cancel installation": removes the VM and the disk images it was given,
+     * read from the saved configuration now (disks may have been added while customizing).
+     * Images another VM also uses, and install media, are kept.
+     */
     fun cancelInstallation() = viewModelScope.launch {
-        _state.update { it.copy(busy = true) }
-        try {
-            // Read the saved configuration now: disks may have been added while customizing.
-            val v = virsh()
-            val disks = deletableDisks(Parsers.parseDomainXml(v.dumpXml(name, inactive = true)).disks).mapNotNull { it.target }
-            v.undefine(name, disks)
-            _state.update { it.copy(deleted = true) }
+        _state.update { it.copy(busy = true, error = null) }
+        val paths = try {
+            virsh().deletionCandidates(name).filter { it.sharedWith.isEmpty() }.map { it.path }
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t), busy = false) }
+            return@launch
         }
+        delete(paths)
     }
 
     fun dismissError() = _state.update { it.copy(error = null) }

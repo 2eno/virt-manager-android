@@ -62,7 +62,7 @@ class RealHostWizardTest {
     @Before fun setUp() {
         assumeTrue(port != null && key != null && uri != null)
         FakeAndroidKeyStore.install()
-        listOf("AI-Chat", "AI-Chat2", "AI-Chat3", "custom-vm", "renamed", "hw-vm").forEach(::cleanup)
+        listOf("AI-Chat", "AI-Chat2", "AI-Chat3", "custom-vm", "renamed", "hw-vm", "setup-vm").forEach(::cleanup)
         // A libvirt network that starts fine but points at a bridge the host doesn't have: guests
         // on it fail with the reported "Cannot get interface MTU on 'br0': No such device".
         virsh("net-destroy", "broken"); virsh("net-undefine", "broken")
@@ -354,5 +354,60 @@ class RealHostWizardTest {
         val vols = virsh("vol-list", "default")
         assertFalse(vols, vols.contains("hw-vm.qcow2") || vols.contains("hw-vm-1.qcow2"))
         assertTrue(vols.contains("debian-13-netinst.iso"))
+    }
+
+    private fun back() {
+        compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        idle()
+    }
+
+    @Test fun unfinishedSetupAndPciDevices() {
+        connect()
+        wizardTo4("setup-vm")
+        click("Customize configuration before install")
+        click("Customize")
+        waitForText("Begin installation")
+
+        // Every PCI device of the host is offered, described even without the PCI ID database.
+        click("Hardware")
+        waitForText("Boot options")
+        clickButton("Add Hardware")
+        click("PCI Host Device")
+        val count = virsh("nodedev-list", "--cap", "pci").lines().count { it.isNotBlank() }
+        waitForText("$count of $count PCI devices")
+        waitForText("Intel Corporation Host bridge")
+        shot("12-pci-devices")
+        compose.onAllNodes(hasText("Search")).onFirst().performTextInput("Ethernet")
+        waitForText("1 of $count PCI devices")
+        click("Red Hat, Inc. Ethernet controller")
+        click("Finish")
+        waitForText("PCI 0000:00:08.0")
+        assertTrue(virsh("dumpxml", "--inactive", "setup-vm").contains("slot='0x08'"))
+        click("PCI 0000:00:08.0")
+        waitForText("Red Hat, Inc. Ethernet controller")
+        assertTrue(compose.onAllNodesWithText("already attached", substring = true).fetchSemanticsNodes().isEmpty())
+        shot("13-pci-device-page")
+        back()
+        waitForText("Boot options")
+
+        // Leaving asks first; "Finish later" keeps the VM, marked as not set up.
+        back()
+        waitForText("Leave setup of")
+        shot("14-leave-setup")
+        click("Finish later")
+        waitForText("Setup not finished")
+        shot("15-setup-not-finished")
+
+        // The setup can be resumed from the list: the page knows it from the VM's metadata.
+        click("setup-vm")
+        waitForText("Begin installation")
+        back()
+        click("Cancel installation") // in the leave dialog
+        waitForText("Install media (ISO files) are kept")
+        clickButton("Cancel installation")
+        compose.waitUntil(60_000) { idle(); virsh("list", "--all", "--name").lines().none { it == "setup-vm" } }
+        waitForText("New VM")
+        assertFalse(virsh("vol-list", "default").contains("setup-vm.qcow2"))
+        assertTrue(virsh("vol-list", "default").contains("debian-13-netinst.iso"))
     }
 }

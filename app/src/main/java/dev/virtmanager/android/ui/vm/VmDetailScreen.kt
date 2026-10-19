@@ -1,5 +1,6 @@
 package dev.virtmanager.android.ui.vm
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -56,6 +58,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.virtmanager.android.libvirt.DomainState
 import dev.virtmanager.android.ui.app
 import dev.virtmanager.android.ui.components.ConfirmDialog
+import dev.virtmanager.android.ui.components.DeleteReportDialog
 import dev.virtmanager.android.ui.components.DeleteVmDialog
 import dev.virtmanager.android.ui.hw.HardwareList
 import dev.virtmanager.android.ui.components.DomainAction
@@ -88,6 +91,7 @@ fun VmDetailScreen(
     var menu by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var cancelling by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
 
     LifecycleResumeEffect(vm) {
@@ -95,7 +99,8 @@ fun VmDetailScreen(
         onPauseOrDispose { vm.stopPolling() }
     }
     LaunchedEffect(state.message) { state.message?.let { snackbar.showSnackbar(it); vm.dismissMessage() } }
-    LaunchedEffect(state.deleted) { if (state.deleted) onBack() }
+    // Leave once the VM is gone, after the user has seen which files couldn't be removed.
+    LaunchedEffect(state.deleted, state.deleteReport) { if (state.deleted && state.deleteReport == null) onBack() }
     // After Begin installation, go straight to the installer's screen like virt-manager does.
     LaunchedEffect(state.openConsole, state.definition) {
         if (!state.openConsole) return@LaunchedEffect
@@ -109,12 +114,19 @@ fun VmDetailScreen(
 
     val domainState = state.stats?.state ?: state.info?.state ?: DomainState.NO_STATE
     val active = domainState.isActive
+    val unfinishedSetup = state.customizing && !active && !state.deleted
+    // Leaving an unfinished setup asks first, like closing virt-manager's customize window.
+    BackHandler(enabled = unfinishedSetup) { leaving = true }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(state.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                navigationIcon = {
+                    IconButton(onClick = { if (unfinishedSetup) leaving = true else onBack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
+                },
                 actions = {
                     if (active && state.definition?.hasSerialConsole == true) {
                         IconButton(onClick = { onSerial(state.name) }) { Icon(Icons.Outlined.Terminal, "Serial console") }
@@ -129,7 +141,7 @@ fun VmDetailScreen(
                                 text = { Text("Delete…", color = MaterialTheme.colorScheme.error) },
                                 leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = MaterialTheme.colorScheme.error) },
                                 enabled = !state.busy,
-                                onClick = { menu = false; deleting = true },
+                                onClick = { menu = false; deleting = true; vm.loadDeleteCandidates() },
                             )
                         }
                     }
@@ -161,7 +173,7 @@ fun VmDetailScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (state.customizing && !active) {
+            if (unfinishedSetup) {
                 CustomizeBanner(busy = state.busy, onBegin = vm::beginInstallation, onCancel = { cancelling = true })
             } else Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
@@ -208,15 +220,37 @@ fun VmDetailScreen(
         )
     }
 
+    if (leaving) {
+        AlertDialog(
+            onDismissRequest = { leaving = false },
+            title = { Text("Leave setup of \"${state.name}\"?") },
+            text = {
+                Text(
+                    "The VM stays defined but not installed. You can finish the setup later from the " +
+                        "machine list, or cancel the installation to delete it and its new disk images.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { leaving = false; onBack() }) { Text("Finish later") } },
+            dismissButton = {
+                TextButton(onClick = { leaving = false; cancelling = true }) {
+                    Text("Cancel installation", color = MaterialTheme.colorScheme.error)
+                }
+            },
+        )
+    }
+
     if (deleting) {
         DeleteVmDialog(
             name = state.name,
             running = active,
-            disks = state.definition?.disks,
+            disks = state.deleteCandidates,
+            lookupError = state.deleteLookupError,
             onConfirm = { vm.delete(it); deleting = false },
             onDismiss = { deleting = false },
         )
     }
+
+    state.deleteReport?.let { DeleteReportDialog(it, onDismiss = vm::dismissDeleteReport) }
 
     pending?.let { a ->
         ConfirmDialog(

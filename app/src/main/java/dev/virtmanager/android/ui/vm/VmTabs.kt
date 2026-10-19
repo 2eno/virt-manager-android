@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import dev.virtmanager.android.libvirt.DomainXmlBuilder
 import dev.virtmanager.android.ui.components.ConfirmDialog
 import dev.virtmanager.android.ui.components.DeleteVmDialog
+import dev.virtmanager.android.ui.hw.Note
 import dev.virtmanager.android.ui.components.Format
 import dev.virtmanager.android.ui.components.InfoRow
 import dev.virtmanager.android.ui.components.MetricTile
@@ -91,6 +92,12 @@ fun VmOverviewTab(state: VmUiState) {
         }
         val d = state.definition
         val i = state.info
+        if (d != null && d.vnc == null && d.graphics.any { it.type == "spice" }) {
+            Note(
+                "This VM's display is Spice, which this app can't show yet. Change the display to VNC on the " +
+                    "Hardware tab (Display Spice → Type), or add a second display with Add Hardware → Graphics.",
+            )
+        }
         SectionCard("Basic details", icon = Icons.Outlined.Info) {
             InfoRow("Name", state.name)
             InfoRow("UUID", d?.uuid ?: i?.uuid)
@@ -232,7 +239,7 @@ fun VmSettingsTab(state: VmUiState, vm: VmDetailViewModel, onEditXml: () -> Unit
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = { deleting = true }) { Text("Delete virtual machine", color = MaterialTheme.colorScheme.error) }
+            OutlinedButton(onClick = { deleting = true; vm.loadDeleteCandidates() }) { Text("Delete virtual machine", color = MaterialTheme.colorScheme.error) }
         }
     }
     if (renaming) {
@@ -250,7 +257,8 @@ fun VmSettingsTab(state: VmUiState, vm: VmDetailViewModel, onEditXml: () -> Unit
         DeleteVmDialog(
             name = state.name,
             running = active,
-            disks = state.definition?.disks,
+            disks = state.deleteCandidates,
+            lookupError = state.deleteLookupError,
             onConfirm = { vm.delete(it); deleting = false },
             onDismiss = { deleting = false },
         )

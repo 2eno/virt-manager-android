@@ -157,13 +157,17 @@ fun HardwareList(connectionId: String, vmName: String, onOpen: (String) -> Unit)
 
 private fun deviceSubtitle(s: DeviceSettings?): String? = when (s) {
     is DiskSettings -> s.source ?: if (s.device == "cdrom") "No media" else null
-    is InterfaceSettings -> "${s.kind}: ${s.source} · ${s.model}" + if (!s.linkUp) " · link down" else ""
-    is GraphicsSettings -> if (s.listen == "none") "Listen: none" else "Listen ${s.listen}" + (s.port?.let { ":$it" } ?: "")
+    is InterfaceSettings -> (if (s.kind == "user") "Usermode" else "${s.kind}: ${s.source}") + " · ${s.model}" + if (!s.linkUp) " · link down" else ""
+    is GraphicsSettings -> when (s.listen) {
+        "none" -> "Listen: none"
+        GraphicsSettings.SOCKET -> "UNIX socket"
+        else -> "Listen ${s.listen}" + (s.port?.let { ":$it" } ?: "")
+    }
     is VideoSettings -> "${s.heads} head" + if (s.accel3d) " · 3D" else ""
     is ControllerSettings -> s.model
     is InputSettings -> s.bus.uppercase()
     is FilesystemSettings -> "${s.source} → ${s.target}"
-    is HostdevSettings -> s.description
+    is HostdevSettings -> null // the label already names the address or vendor:product
     else -> null
 }
 
@@ -368,7 +372,7 @@ fun AddHardwareScreen(connectionId: String, vmName: String, onBack: () -> Unit) 
         d == null -> null
         newDisk && ((sizeGiB.toIntOrNull() ?: 0) < 1 || pool == null) -> "Enter a size and choose a storage pool"
         newDisk -> null
-        else -> validate(d, state)
+        else -> validateNew(d, state)
     }
 
     Scaffold(
@@ -386,8 +390,9 @@ fun AddHardwareScreen(connectionId: String, vmName: String, onBack: () -> Unit) 
                                 "Storage added",
                                 before = {
                                     val p = pool!!
-                                    val volName = uniqueVolumeName(p, "${cfg.name}.qcow2")
-                                    path = createVolume(p, volName, sizeGiB.toInt(), (d as DiskSettings).format ?: "qcow2")
+                                    val format = (d as DiskSettings).format ?: "qcow2"
+                                    val volName = uniqueVolumeName(p, "${cfg.name}." + if (format == "qcow2") "qcow2" else "img")
+                                    path = createVolume(p, volName, sizeGiB.toInt(), format)
                                     created = p to volName
                                 },
                                 rollback = { created?.let { (p, v) -> deleteVolume(p, v) } },

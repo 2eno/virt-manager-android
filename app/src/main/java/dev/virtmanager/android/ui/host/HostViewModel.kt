@@ -8,7 +8,6 @@ import dev.virtmanager.android.data.DomainMetrics
 import dev.virtmanager.android.data.HostCpuTracker
 import dev.virtmanager.android.data.LiveConnection
 import dev.virtmanager.android.data.MetricsTracker
-import dev.virtmanager.android.libvirt.DiskDevice
 import dev.virtmanager.android.libvirt.DomainStats
 import dev.virtmanager.android.libvirt.NetworkDetails
 import dev.virtmanager.android.libvirt.NodeMemStats
@@ -17,6 +16,7 @@ import dev.virtmanager.android.libvirt.StorageVolume
 import dev.virtmanager.android.libvirt.VirshClient
 import dev.virtmanager.android.libvirt.VirtualNetwork
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,8 +24,16 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-/** A delete confirmation in progress; [disks] is null until the VM definition has loaded. */
-data class DeleteRequest(val name: String, val running: Boolean, val disks: List<DiskDevice>? = null)
+/**
+ * A delete confirmation in progress; [disks] is null until the VM's disk images have been looked
+ * up, [lookupError] says why that failed.
+ */
+data class DeleteRequest(
+    val name: String,
+    val running: Boolean,
+    val disks: List<VirshClient.DiskCandidate>? = null,
+    val lookupError: String? = null,
+)
 
 data class HostUiState(
     val title: String = "",
@@ -43,6 +51,10 @@ data class HostUiState(
     val volumes: Map<String, List<StorageVolume>> = emptyMap(),
     val busy: Set<String> = emptySet(),
     val deleteRequest: DeleteRequest? = null,
+    /** Files a deletion couldn't remove. */
+    val deleteReport: VirshClient.DeleteReport? = null,
+    /** Shut-off VMs whose setup ("Customize configuration before install") isn't finished. */
+    val pendingSetup: Set<String> = emptySet(),
     val error: String? = null,
     val message: String? = null,
 )
@@ -54,6 +66,8 @@ class HostViewModel(private val app: VirtManagerApp, val connectionId: String) :
     private val tracker = MetricsTracker()
     private val cpuTracker = HostCpuTracker()
     private var pollJob: Job? = null
+    private var pollCount = 0
+    private var checkedInactive: Set<String>? = null
 
     private suspend fun conn(): LiveConnection = app.connections.connect(connectionId)
 
@@ -103,7 +117,22 @@ class HostViewModel(private val app: VirtManagerApp, val connectionId: String) :
             }
         } catch (t: Throwable) {
             _state.update { it.copy(loading = false, error = ConnectionManager.friendly(t)) }
+            return
         }
+        refreshPendingSetups()
+    }
+
+    /**
+     * Looks for unfinished setups among the shut-off VMs: whenever that set changes (a VM was
+     * created, started or deleted) and otherwise about every half minute.
+     */
+    private suspend fun refreshPendingSetups() {
+        val inactive = _state.value.domains.filter { !it.state.isActive }.map { it.name }.toSet()
+        val due = inactive != checkedInactive || pollCount++ % 15 == 0
+        if (!due) return
+        checkedInactive = inactive
+        runCatching { conn().virsh.pendingSetups(inactive.toList()) }
+            .onSuccess { pending -> _state.update { it.copy(pendingSetup = pending) } }
     }
 
     fun refresh() = viewModelScope.launch { poll() }
@@ -135,28 +164,46 @@ class HostViewModel(private val app: VirtManagerApp, val connectionId: String) :
     fun requestDelete(domain: DomainStats) {
         _state.update { it.copy(deleteRequest = DeleteRequest(domain.name, domain.state.isActive)) }
         viewModelScope.launch {
-            try {
-                val disks = conn().virsh.definition(domain.name).disks
-                _state.update { s ->
-                    if (s.deleteRequest?.name == domain.name) s.copy(deleteRequest = s.deleteRequest.copy(disks = disks)) else s
-                }
+            val update: (DeleteRequest) -> DeleteRequest = try {
+                val disks = conn().virsh.deletionCandidates(domain.name)
+                ({ it.copy(disks = disks) })
             } catch (t: Throwable) {
-                _state.update { it.copy(deleteRequest = null, error = "Delete failed: ${ConnectionManager.friendly(t)}") }
+                // Still allow deleting the definition; the dialog says why no disks are offered.
+                val why = ConnectionManager.friendly(t)
+                ({ it.copy(disks = emptyList(), lookupError = why) })
             }
+            _state.update { s -> if (s.deleteRequest?.name == domain.name) s.copy(deleteRequest = update(s.deleteRequest)) else s }
         }
     }
 
     fun cancelDelete() = _state.update { it.copy(deleteRequest = null) }
 
-    fun confirmDelete(deleteStorage: List<String>) {
+    fun confirmDelete(deletePaths: List<String>) {
         val request = _state.value.deleteRequest ?: return
         _state.update { it.copy(deleteRequest = null) }
-        domainAction(request.name, "Delete", successMessage = "Deleted ${request.name}") { name ->
-            // Re-check the state: the VM may have started or stopped while the dialog was open.
-            if (domInfo(name).state.isActive) destroy(name)
-            undefine(name, deleteStorage)
+        // Finish even if the screen is closed meanwhile: a half-done deletion helps nobody.
+        viewModelScope.launch(NonCancellable) {
+            val name = request.name
+            _state.update { it.copy(busy = it.busy + name) }
+            try {
+                val report = conn().virsh.deleteDomain(name, deletePaths)
+                _state.update {
+                    it.copy(
+                        message = "Deleted $name",
+                        deleteReport = report.takeIf { r -> r.notDeleted.isNotEmpty() },
+                        pendingSetup = it.pendingSetup - name,
+                    )
+                }
+                poll()
+            } catch (t: Throwable) {
+                _state.update { it.copy(error = "Delete failed: ${ConnectionManager.friendly(t)}") }
+            } finally {
+                _state.update { it.copy(busy = it.busy - name) }
+            }
         }
     }
+
+    fun dismissDeleteReport() = _state.update { it.copy(deleteReport = null) }
 
     fun loadNetworks() = viewModelScope.launch {
         try {

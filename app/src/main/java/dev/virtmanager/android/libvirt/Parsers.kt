@@ -342,6 +342,12 @@ object Parsers {
             hasGuestAgentChannel = devices?.children("channel").orEmpty().any {
                 it.child("target")?.attr("name") == "org.qemu.guest_agent.0"
             },
+            setupPending = root.child("metadata")?.let { md ->
+                val nodes = md.childNodes
+                (0 until nodes.length).map { nodes.item(it) }.filterIsInstance<Element>().any { e ->
+                    e.tagName.endsWith(":setup") && (0 until e.attributes.length).any { i -> e.attributes.item(i).nodeValue == SetupMarker.NS }
+                }
+            } == true,
         )
     }
 

@@ -139,9 +139,19 @@ class ConfigViewModel(
             .onFailure { t -> _state.update { it.copy(error = ConnectionManager.friendly(t)) } }
     }
 
-    fun loadHostDevices(type: String) = loadOnce(_state.value.hostDevices[type]) { v ->
-        val devs = v.hostDevices(type)
-        _state.update { it.copy(hostDevices = it.hostDevices + (type to devs)) }
+    private val hostDeviceLoads = mutableSetOf<String>()
+
+    fun loadHostDevices(type: String) {
+        if (_state.value.hostDevices[type] != null || !hostDeviceLoads.add(type)) return
+        viewModelScope.launch {
+            // An empty list instead of a spinner forever when the host can't be asked.
+            val devs = try { virsh().hostDevices(type) } catch (t: Throwable) {
+                _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+                emptyList()
+            }
+            _state.update { it.copy(hostDevices = it.hostDevices + (type to devs)) }
+            hostDeviceLoads.remove(type)
+        }
     }
 
     private fun loadOnce(current: Any?, block: suspend (VirshClient) -> Unit) {
