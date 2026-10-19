@@ -4,6 +4,7 @@ import android.os.Looper
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -113,6 +114,17 @@ class AppScreenshotTest {
         tick(1)
         shot("03-machines-dark")
         runBlocking { app.repository.setThemeMode(ThemeMode.SYSTEM) }
+        tick(1)
+
+        // Delete from the list: the third card is k8s-node-1 (running, one disk).
+        compose.onAllNodesWithContentDescription("More")[2].performClick()
+        waitForText("Delete…")
+        compose.onNodeWithText("Delete…").performClick()
+        waitForText("Also delete disk images")
+        compose.onNodeWithText("Also delete disk images").performClick()
+        waitForText("vda: /var/lib/libvirt/images/k8s-node-1.qcow2")
+        shot("13-delete-vm")
+        compose.onNodeWithText("Cancel").performClick()
         tick(1)
 
         compose.onNodeWithText("Host").performClick()

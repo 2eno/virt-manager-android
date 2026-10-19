@@ -125,12 +125,12 @@ class VmDetailViewModel(
         }
     }
 
-    fun delete(removeStorage: Boolean) = viewModelScope.launch {
+    fun delete(deleteStorage: List<String>) = viewModelScope.launch {
         _state.update { it.copy(busy = true) }
         try {
             val v = virsh()
             if (_state.value.stats?.state?.isActive == true) v.destroy(name)
-            v.undefine(name, removeStorage)
+            v.undefine(name, deleteStorage)
             _state.update { it.copy(deleted = true) }
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t), busy = false) }

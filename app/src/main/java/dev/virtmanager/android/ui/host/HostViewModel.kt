@@ -8,6 +8,7 @@ import dev.virtmanager.android.data.DomainMetrics
 import dev.virtmanager.android.data.HostCpuTracker
 import dev.virtmanager.android.data.LiveConnection
 import dev.virtmanager.android.data.MetricsTracker
+import dev.virtmanager.android.libvirt.DiskDevice
 import dev.virtmanager.android.libvirt.DomainStats
 import dev.virtmanager.android.libvirt.NetworkDetails
 import dev.virtmanager.android.libvirt.NodeMemStats
@@ -22,6 +23,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+/** A delete confirmation in progress; [disks] is null until the VM definition has loaded. */
+data class DeleteRequest(val name: String, val running: Boolean, val disks: List<DiskDevice>? = null)
 
 data class HostUiState(
     val title: String = "",
@@ -38,6 +42,7 @@ data class HostUiState(
     val pools: List<StoragePool>? = null,
     val volumes: Map<String, List<StorageVolume>> = emptyMap(),
     val busy: Set<String> = emptySet(),
+    val deleteRequest: DeleteRequest? = null,
     val error: String? = null,
     val message: String? = null,
 )
@@ -107,18 +112,49 @@ class HostViewModel(private val app: VirtManagerApp, val connectionId: String) :
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     /** Runs a lifecycle action on a domain, tracking it as busy for the UI. */
-    fun domainAction(name: String, label: String, action: suspend VirshClient.(String) -> Unit) {
+    fun domainAction(
+        name: String,
+        label: String,
+        successMessage: String = "$label: $name",
+        action: suspend VirshClient.(String) -> Unit,
+    ) {
         viewModelScope.launch {
             _state.update { it.copy(busy = it.busy + name) }
             try {
                 conn().virsh.action(name)
-                _state.update { it.copy(message = "$label: $name") }
+                _state.update { it.copy(message = successMessage) }
                 poll()
             } catch (t: Throwable) {
                 _state.update { it.copy(error = "$label failed: ${ConnectionManager.friendly(t)}") }
             } finally {
                 _state.update { it.copy(busy = it.busy - name) }
             }
+        }
+    }
+
+    fun requestDelete(domain: DomainStats) {
+        _state.update { it.copy(deleteRequest = DeleteRequest(domain.name, domain.state.isActive)) }
+        viewModelScope.launch {
+            try {
+                val disks = conn().virsh.definition(domain.name).disks
+                _state.update { s ->
+                    if (s.deleteRequest?.name == domain.name) s.copy(deleteRequest = s.deleteRequest.copy(disks = disks)) else s
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(deleteRequest = null, error = "Delete failed: ${ConnectionManager.friendly(t)}") }
+            }
+        }
+    }
+
+    fun cancelDelete() = _state.update { it.copy(deleteRequest = null) }
+
+    fun confirmDelete(deleteStorage: List<String>) {
+        val request = _state.value.deleteRequest ?: return
+        _state.update { it.copy(deleteRequest = null) }
+        domainAction(request.name, "Delete", successMessage = "Deleted ${request.name}") { name ->
+            // Re-check the state: the VM may have started or stopped while the dialog was open.
+            if (domInfo(name).state.isActive) destroy(name)
+            undefine(name, deleteStorage)
         }
     }
 

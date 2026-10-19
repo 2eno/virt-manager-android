@@ -61,4 +61,27 @@ class ShellAndVirshTest {
         assertEquals("<domain/>", received)
         assertTrue(runner.commands.single().endsWith("define /dev/stdin"))
     }
+
+    @Test fun undefineDeletesOnlyListedDisks() = runBlocking {
+        val runner = FakeRunner { _, _ -> ExecResult(0, "", "") }
+        VirshClient(runner, "qemu:///system").undefine("web", listOf("vda", "vdb"))
+        val cmd = runner.commands.single()
+        assertTrue(cmd, cmd.endsWith("undefine web --managed-save --snapshots-metadata --nvram --storage vda,vdb"))
+        assertTrue(!cmd.contains("--remove-all-storage"))
+    }
+
+    @Test fun undefineKeepsStorageByDefault() = runBlocking {
+        val runner = FakeRunner { _, _ -> ExecResult(0, "", "") }
+        VirshClient(runner, "qemu:///system").undefine("web")
+        assertTrue(!runner.commands.single().contains("--storage"))
+    }
+
+    @Test fun undefineFallsBackWithoutNvramFlags() = runBlocking {
+        val runner = FakeRunner { cmd, _ ->
+            if (cmd.contains("--nvram")) ExecResult(1, "", "error: unsupported flags (0x4)") else ExecResult(0, "", "")
+        }
+        VirshClient(runner, "qemu:///system").undefine("web", listOf("vda"))
+        assertEquals(2, runner.commands.size)
+        assertTrue(runner.commands[1], runner.commands[1].endsWith("undefine web --storage vda"))
+    }
 }

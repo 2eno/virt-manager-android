@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.MoreVert
@@ -49,6 +50,7 @@ import dev.virtmanager.android.data.DomainMetrics
 import dev.virtmanager.android.libvirt.DomainState
 import dev.virtmanager.android.libvirt.DomainStats
 import dev.virtmanager.android.ui.components.ConfirmDialog
+import dev.virtmanager.android.ui.components.DeleteVmDialog
 import dev.virtmanager.android.ui.components.DomainAction
 import dev.virtmanager.android.ui.components.EmptyState
 import dev.virtmanager.android.ui.components.Format
@@ -86,7 +88,7 @@ fun MachinesTab(
 
     fun act(name: String, action: DomainAction) {
         if (action.confirm != null) pending = name to action
-        else vm.domainAction(name, action.label, action.run)
+        else vm.domainAction(name, action.label, action = action.run)
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -130,11 +132,22 @@ fun MachinesTab(
                         onClick = { onOpenVm(d.name) },
                         onConsole = { onConsole(d.name) },
                         onAction = { act(d.name, it) },
+                        onDelete = { vm.requestDelete(d) },
                         modifier = Modifier.animateItem(),
                     )
                 }
             }
         }
+    }
+
+    state.deleteRequest?.let { req ->
+        DeleteVmDialog(
+            name = req.name,
+            running = req.running,
+            disks = req.disks,
+            onConfirm = vm::confirmDelete,
+            onDismiss = vm::cancelDelete,
+        )
     }
 
     pending?.let { (name, action) ->
@@ -143,7 +156,7 @@ fun MachinesTab(
             message = action.confirm.orEmpty(),
             confirmLabel = action.label,
             destructive = action == DomainAction.FORCE_OFF || action == DomainAction.RESET,
-            onConfirm = { vm.domainAction(name, action.label, action.run); pending = null },
+            onConfirm = { vm.domainAction(name, action.label, action = action.run); pending = null },
             onDismiss = { pending = null },
         )
     }
@@ -157,6 +170,7 @@ private fun VmCard(
     onClick: () -> Unit,
     onConsole: () -> Unit,
     onAction: (DomainAction) -> Unit,
+    onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -207,6 +221,13 @@ private fun VmCard(
                                 onClick = { menu = false; onAction(a) },
                             )
                         }
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("Delete…", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                            enabled = !busy,
+                            onClick = { menu = false; onDelete() },
+                        )
                     }
                 }
             }

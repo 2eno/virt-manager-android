@@ -30,7 +30,6 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -53,6 +52,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.virtmanager.android.libvirt.DomainXmlBuilder
 import dev.virtmanager.android.ui.components.ConfirmDialog
+import dev.virtmanager.android.ui.components.DeleteVmDialog
 import dev.virtmanager.android.ui.components.Format
 import dev.virtmanager.android.ui.components.InfoRow
 import dev.virtmanager.android.ui.components.MetricTile
@@ -303,7 +303,6 @@ fun VmSnapshotsTab(state: VmUiState, vm: VmDetailViewModel) {
 fun VmSettingsTab(state: VmUiState, vm: VmDetailViewModel) {
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
-    var removeStorage by remember { mutableStateOf(false) }
     var showXml by remember { mutableStateOf(false) }
     val active = state.stats?.state?.isActive == true
     TabColumn {
@@ -356,19 +355,12 @@ fun VmSettingsTab(state: VmUiState, vm: VmDetailViewModel) {
         )
     }
     if (deleting) {
-        ConfirmDialog(
-            title = "Delete \"${state.name}\"?",
-            message = if (active) "The VM is running and will be forced off first." else "This removes the VM from the host.",
-            confirmLabel = "Delete",
-            destructive = true,
-            onConfirm = { vm.delete(removeStorage); deleting = false },
+        DeleteVmDialog(
+            name = state.name,
+            running = active,
+            disks = state.definition?.disks,
+            onConfirm = { vm.delete(it); deleting = false },
             onDismiss = { deleting = false },
-            extra = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = removeStorage, onCheckedChange = { removeStorage = it })
-                    Text("Also delete storage volumes")
-                }
-            },
         )
     }
 }

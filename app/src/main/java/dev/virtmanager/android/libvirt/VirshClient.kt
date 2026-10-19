@@ -131,15 +131,18 @@ class VirshClient(
     suspend fun setAutostart(name: String, enabled: Boolean) =
         if (enabled) virsh("autostart", name) else virsh("autostart", "--disable", name)
 
-    suspend fun undefine(name: String, removeStorage: Boolean) {
-        val args = mutableListOf("undefine", name, "--managed-save", "--snapshots-metadata", "--nvram")
-        if (removeStorage) args += "--remove-all-storage"
+    /**
+     * Removes the VM definition. [deleteStorage] lists disk targets (e.g. "vda") whose volumes are
+     * deleted too. Only the VM's own disks are passed, never `--remove-all-storage`, so a shared
+     * install ISO attached as a CD-ROM is left alone.
+     */
+    suspend fun undefine(name: String, deleteStorage: List<String> = emptyList()) {
+        val storage = if (deleteStorage.isEmpty()) emptyList() else listOf("--storage", deleteStorage.joinToString(","))
+        val args = listOf("undefine", name, "--managed-save", "--snapshots-metadata", "--nvram") + storage
         val r = runner.run(virshCommand(args), null)
         if (!r.ok) {
             // Older libvirt doesn't know --nvram for BIOS guests; retry with a minimal set.
-            val fallback = mutableListOf("undefine", name)
-            if (removeStorage) fallback += "--remove-all-storage"
-            virsh(*fallback.toTypedArray())
+            virsh(*(listOf("undefine", name) + storage).toTypedArray())
         }
     }
 

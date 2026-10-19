@@ -1,6 +1,7 @@
 package dev.virtmanager.android.ui.vm
 
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,10 +14,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DesktopWindows
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -47,6 +52,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.virtmanager.android.libvirt.DomainState
 import dev.virtmanager.android.ui.app
 import dev.virtmanager.android.ui.components.ConfirmDialog
+import dev.virtmanager.android.ui.components.DeleteVmDialog
 import dev.virtmanager.android.ui.components.DomainAction
 import dev.virtmanager.android.ui.components.ErrorBanner
 import dev.virtmanager.android.ui.components.StateBadge
@@ -67,6 +73,8 @@ fun VmDetailScreen(
     val state by vm.state.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var pending by remember { mutableStateOf<DomainAction?>(null) }
+    var menu by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
 
     LifecycleResumeEffect(vm) {
@@ -90,6 +98,17 @@ fun VmDetailScreen(
                     }
                     if (active && state.definition?.vnc != null) {
                         IconButton(onClick = { onConsole(state.name) }) { Icon(Icons.Outlined.DesktopWindows, "Graphical console") }
+                    }
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "More") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Delete…", color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                                enabled = !state.busy,
+                                onClick = { menu = false; deleting = true },
+                            )
+                        }
                     }
                 },
             )
@@ -148,6 +167,16 @@ fun VmDetailScreen(
                 3 -> VmSettingsTab(state, vm)
             }
         }
+    }
+
+    if (deleting) {
+        DeleteVmDialog(
+            name = state.name,
+            running = active,
+            disks = state.definition?.disks,
+            onConfirm = { vm.delete(it); deleting = false },
+            onDismiss = { deleting = false },
+        )
     }
 
     pending?.let { a ->
