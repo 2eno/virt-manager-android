@@ -20,12 +20,21 @@ import dev.virtmanager.android.ui.console.VncScreen
 import dev.virtmanager.android.ui.create.NewVmScreen
 import dev.virtmanager.android.ui.host.HostScreen
 import dev.virtmanager.android.ui.vm.VmDetailScreen
+import dev.virtmanager.android.ui.vm.XmlEditorScreen
 import kotlinx.serialization.Serializable
 
 @Serializable object ConnectionsRoute
 @Serializable data class EditConnectionRoute(val id: String? = null)
 @Serializable data class HostRoute(val connectionId: String)
-@Serializable data class VmRoute(val connectionId: String, val name: String)
+@Serializable data class VmRoute(
+    val connectionId: String,
+    val name: String,
+    /** Shown as an error banner on arrival, e.g. why a freshly created VM didn't start. */
+    val notice: String? = null,
+    /** Opened from the New VM wizard's "Customize configuration before install". */
+    val customize: Boolean = false,
+)
+@Serializable data class XmlEditRoute(val connectionId: String, val name: String)
 @Serializable data class NewVmRoute(val connectionId: String)
 @Serializable data class VncRoute(val connectionId: String, val name: String)
 @Serializable data class SerialRoute(val connectionId: String, val name: String)
@@ -69,16 +78,25 @@ fun AppNavigation() {
             VmDetailScreen(
                 connectionId = r.connectionId,
                 vmName = r.name,
+                notice = r.notice,
+                customize = r.customize,
                 onBack = { nav.popBackStack() },
                 onConsole = { nav.navigate(VncRoute(r.connectionId, it)) },
                 onSerial = { nav.navigate(SerialRoute(r.connectionId, it)) },
+                onEditXml = { nav.navigate(XmlEditRoute(r.connectionId, it)) },
             )
+        }
+        composable<XmlEditRoute> { entry ->
+            val r = entry.toRoute<XmlEditRoute>()
+            XmlEditorScreen(r.connectionId, r.name, onDone = { nav.popBackStack() })
         }
         composable<NewVmRoute> { entry ->
             val r = entry.toRoute<NewVmRoute>()
             NewVmScreen(r.connectionId) { created ->
                 nav.popBackStack()
-                if (created != null) nav.navigate(VmRoute(r.connectionId, created))
+                if (created != null) {
+                    nav.navigate(VmRoute(r.connectionId, created.name, created.startError, created.customize))
+                }
             }
         }
         composable<VncRoute> { entry ->

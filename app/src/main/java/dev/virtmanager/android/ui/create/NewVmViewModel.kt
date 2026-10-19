@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import dev.virtmanager.android.VirtManagerApp
 import dev.virtmanager.android.data.ConnectionManager
 import dev.virtmanager.android.libvirt.DomainXmlBuilder
+import dev.virtmanager.android.libvirt.NetworkSource
 import dev.virtmanager.android.libvirt.NewVmSpec
 import dev.virtmanager.android.libvirt.StoragePool
 import dev.virtmanager.android.libvirt.StorageVolume
@@ -23,10 +24,19 @@ data class NewVmEnv(
     val pools: List<StoragePool> = emptyList(),
     val networks: List<VirtualNetwork> = emptyList(),
     val isos: List<StorageVolume> = emptyList(),
+    /** Linux bridges on the host; null if they couldn't be listed (then any name is accepted). */
+    val bridges: List<String>? = null,
+    val virtType: String = "kvm",
     val progress: String? = null,
     val error: String? = null,
-    val created: String? = null,
+    val created: Created? = null,
 )
+
+/**
+ * How creation ended. The VM exists in every case; [startError] is set when it was defined but
+ * failed to start, so the user lands on its page with the reason instead of retrying the wizard.
+ */
+data class Created(val name: String, val customize: Boolean, val startError: String? = null)
 
 class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: String) : ViewModel() {
     private val _env = MutableStateFlow(NewVmEnv())
@@ -40,6 +50,9 @@ class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: 
                 val pools = runCatching { v.pools() }.getOrDefault(emptyList())
                 val nets = runCatching { v.networks() }.getOrDefault(emptyList())
                 val isos = runCatching { v.isoImages() }.getOrDefault(emptyList())
+                val libvirtBridges = nets.mapNotNull { n -> runCatching { v.networkDetails(n.name).bridge }.getOrNull() }.toSet()
+                val bridges = runCatching { v.hostBridges(libvirtBridges) }.getOrNull()
+                val virtType = if (v.supportsKvm()) "kvm" else "qemu"
                 val names = runCatching { v.pollHost().domains.map { it.name }.toSet() }.getOrDefault(emptySet())
                 _env.update {
                     it.copy(
@@ -50,6 +63,8 @@ class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: 
                         pools = pools.filter { p -> p.active },
                         networks = nets,
                         isos = isos,
+                        bridges = bridges,
+                        virtType = virtType,
                         existingNames = names,
                     )
                 }
@@ -59,23 +74,69 @@ class NewVmViewModel(private val app: VirtManagerApp, private val connectionId: 
         }
     }
 
-    fun create(spec: NewVmSpec, diskGiB: Int?, pool: String?, start: Boolean) = viewModelScope.launch {
+    /**
+     * Creates the disk, defines the VM and optionally starts it. If defining fails, the new disk is
+     * deleted again, so a retry starts from a clean slate. With [customize] the VM is only defined;
+     * it is started later from its details page ("Begin installation").
+     */
+    fun create(spec: NewVmSpec, diskGiB: Int?, pool: String?, start: Boolean, customize: Boolean) = viewModelScope.launch {
+        _env.update { it.copy(error = null) }
+        val v = try {
+            app.connections.connect(connectionId).virsh
+        } catch (t: Throwable) {
+            _env.update { it.copy(error = ConnectionManager.friendly(t)) }
+            return@launch
+        }
+        var createdVolume: Pair<String, String>? = null
         try {
-            val v = app.connections.connect(connectionId).virsh
+            preflight(spec)
             var diskPath: String? = null
             if (diskGiB != null && pool != null) {
-                _env.update { it.copy(progress = "Creating ${diskGiB} GiB disk in \"$pool\"…", error = null) }
-                diskPath = v.createVolume(pool, "${spec.name}.qcow2", diskGiB)
+                // Reuse-safe: a leftover image from an earlier attempt is never overwritten or reused.
+                val volName = v.uniqueVolumeName(pool, "${spec.name}.qcow2")
+                _env.update { it.copy(progress = "Creating $diskGiB GiB disk $volName…") }
+                diskPath = v.createVolume(pool, volName, diskGiB)
+                createdVolume = pool to volName
             }
             _env.update { it.copy(progress = "Defining virtual machine…") }
-            v.defineXml(DomainXmlBuilder.build(spec.copy(diskPath = diskPath)))
-            if (start) {
-                _env.update { it.copy(progress = "Starting ${spec.name}…") }
-                v.start(spec.name)
-            }
-            _env.update { it.copy(progress = null, created = spec.name) }
+            v.defineXml(DomainXmlBuilder.build(spec.copy(diskPath = diskPath, virtType = _env.value.virtType)))
         } catch (t: Throwable) {
+            createdVolume?.let { (p, vol) -> runCatching { v.deleteVolume(p, vol) } }
             _env.update { it.copy(progress = null, error = ConnectionManager.friendly(t)) }
+            return@launch
+        }
+
+        // From here on the VM exists; failures are reported on its page, not in the wizard.
+        var startError: String? = null
+        if (start && !customize) {
+            try {
+                _env.update { it.copy(progress = "Starting ${spec.name}…") }
+                v.startWithNetworks(spec.name)
+            } catch (t: Throwable) {
+                startError = "Created, but it failed to start: ${ConnectionManager.friendly(t)}"
+            }
+        }
+        _env.update { it.copy(progress = null, created = Created(spec.name, customize, startError)) }
+    }
+
+    /** Catches problems that would otherwise only surface after the disk and VM were created. */
+    private fun preflight(spec: NewVmSpec) {
+        when (val net = spec.network) {
+            is NetworkSource.Bridge -> {
+                if (net.bridge.isBlank()) throw IllegalArgumentException("Enter the name of a bridge on the host")
+                val known = _env.value.bridges
+                if (known != null && net.bridge !in known) {
+                    throw IllegalArgumentException(
+                        "The host has no bridge named \"${net.bridge}\"" +
+                            if (known.isEmpty()) ". Use a virtual network instead." else " (found: ${known.joinToString()}).",
+                    )
+                }
+            }
+            is NetworkSource.Virtual ->
+                if (_env.value.networks.none { it.name == net.network }) {
+                    throw IllegalArgumentException("Virtual network \"${net.network}\" doesn't exist")
+                }
+            NetworkSource.None -> Unit
         }
     }
 

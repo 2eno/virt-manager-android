@@ -19,7 +19,7 @@ enum class DomainAction(
     val confirm: String? = null,
     val run: suspend VirshClient.(String) -> Unit,
 ) {
-    START("Start", Icons.Outlined.PlayArrow, run = { start(it) }),
+    START("Start", Icons.Outlined.PlayArrow, run = { startWithNetworks(it) }),
     RESUME("Resume", Icons.Outlined.PlayArrow, run = { resume(it) }),
     PAUSE("Pause", Icons.Outlined.Pause, run = { suspend(it) }),
     SHUTDOWN("Shut down", Icons.Outlined.PowerSettingsNew, run = { shutdown(it) }),

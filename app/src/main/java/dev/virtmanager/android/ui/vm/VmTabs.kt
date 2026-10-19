@@ -1,5 +1,7 @@
 package dev.virtmanager.android.ui.vm
 
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -111,6 +113,7 @@ fun VmHardwareTab(state: VmUiState, vm: VmDetailViewModel) {
     val d = state.definition
     var editCpu by remember { mutableStateOf(false) }
     var editMem by remember { mutableStateOf(false) }
+    var editNic by remember { mutableStateOf<Int?>(null) }
     var mediaTarget by remember { mutableStateOf<String?>(null) }
     if (d == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -174,6 +177,9 @@ fun VmHardwareTab(state: VmUiState, vm: VmDetailViewModel) {
                     InfoRow("Received", Format.bytes(n.rxBytes))
                     InfoRow("Sent", Format.bytes(n.txBytes))
                 }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    FilledTonalButton(onClick = { editNic = idx; vm.loadNetworkChoices() }, enabled = !state.busy) { Text("Change…") }
+                }
             }
         }
 
@@ -217,6 +223,18 @@ fun VmHardwareTab(state: VmUiState, vm: VmDetailViewModel) {
             onConfirm = { vm.setMemory(it.toLong()); editMem = false },
             onDismiss = { editMem = false },
         )
+    }
+    editNic?.let { idx ->
+        val nic = d.interfaces.getOrNull(idx)
+        if (nic != null) {
+            NetworkEditDialog(
+                current = nic,
+                choices = state.networkChoices,
+                running = state.stats?.state?.isActive == true,
+                onConfirm = { source, model -> vm.setInterface(idx, source, model); editNic = null },
+                onDismiss = { editNic = null },
+            )
+        }
     }
     mediaTarget?.let { target ->
         TextInputDialog(
@@ -300,19 +318,28 @@ fun VmSnapshotsTab(state: VmUiState, vm: VmDetailViewModel) {
 }
 
 @Composable
-fun VmSettingsTab(state: VmUiState, vm: VmDetailViewModel) {
+fun VmSettingsTab(state: VmUiState, vm: VmDetailViewModel, onEditXml: () -> Unit) {
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var showXml by remember { mutableStateOf(false) }
     val active = state.stats?.state?.isActive == true
     TabColumn {
         SectionCard("Boot options", icon = Icons.Outlined.Settings) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            val canAutostart = state.info?.persistent == true
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.toggleable(
+                    value = state.info?.autostart == true,
+                    enabled = canAutostart,
+                    role = Role.Switch,
+                    onValueChange = vm::setAutostart,
+                ),
+            ) {
                 Column(Modifier.weight(1f)) {
                     Text("Start on host boot")
                     Text("Autostart this VM with libvirtd", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Switch(checked = state.info?.autostart == true, onCheckedChange = vm::setAutostart, enabled = state.info?.persistent == true)
+                Switch(checked = state.info?.autostart == true, onCheckedChange = null, enabled = canAutostart)
             }
         }
         SectionCard("Manage", icon = Icons.Outlined.Edit) {
@@ -320,8 +347,13 @@ fun VmSettingsTab(state: VmUiState, vm: VmDetailViewModel) {
             if (active) {
                 Text("Shut the VM down to rename it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            TextButton(onClick = { showXml = !showXml }) {
-                Icon(Icons.Outlined.Code, null); Spacer(Modifier.width(8.dp)); Text(if (showXml) "Hide XML" else "Show XML")
+            Row {
+                TextButton(onClick = onEditXml) {
+                    Icon(Icons.Outlined.Edit, null); Spacer(Modifier.width(8.dp)); Text("Edit XML…")
+                }
+                TextButton(onClick = { showXml = !showXml }) {
+                    Icon(Icons.Outlined.Code, null); Spacer(Modifier.width(8.dp)); Text(if (showXml) "Hide live XML" else "Show live XML")
+                }
             }
             if (showXml) {
                 SelectionContainer {

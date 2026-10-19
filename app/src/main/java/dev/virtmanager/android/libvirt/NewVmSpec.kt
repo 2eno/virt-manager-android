@@ -22,6 +22,8 @@ data class NewVmSpec(
     val diskFormat: String = "qcow2",
     val network: NetworkSource = NetworkSource.Virtual("default"),
     val osFamily: OsFamily = OsFamily.LINUX,
+    /** "kvm" when the host has hardware virtualization, otherwise "qemu" (software emulation). */
+    val virtType: String = "kvm",
     val uuid: String = UUID.randomUUID().toString(),
 )
 
@@ -53,7 +55,7 @@ object DomainXmlBuilder {
         val cdBus = if (isArm) "scsi" else "sata"
 
         return buildString {
-            appendLine("<domain type='kvm'>")
+            appendLine("<domain type='${esc(spec.virtType)}'>")
             appendLine("  <name>${esc(spec.name)}</name>")
             appendLine("  <uuid>${esc(spec.uuid)}</uuid>")
             appendLine("  <memory unit='MiB'>${spec.memoryMiB}</memory>")
@@ -80,7 +82,8 @@ object DomainXmlBuilder {
                 appendLine("    </hyperv>")
             }
             appendLine("  </features>")
-            appendLine("  <cpu mode='host-passthrough' check='none'/>")
+            // host-passthrough needs KVM; emulated guests get QEMU's default CPU model.
+            if (spec.virtType == "kvm") appendLine("  <cpu mode='host-passthrough' check='none'/>")
             appendLine("  <clock offset='${if (windows) "localtime" else "utc"}'>")
             appendLine("    <timer name='rtc' tickpolicy='catchup'/>")
             appendLine("    <timer name='pit' tickpolicy='delay'/>")

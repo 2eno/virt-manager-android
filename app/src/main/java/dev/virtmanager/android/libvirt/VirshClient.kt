@@ -88,6 +88,10 @@ class VirshClient(
         )
     }
 
+    /** Whether libvirt can run KVM guests on this host (else only TCG emulation). */
+    suspend fun supportsKvm(): Boolean =
+        runCatching { virsh("capabilities").contains("<domain type='kvm'") }.getOrDefault(true)
+
     data class HostDetails(
         val hostname: String?,
         val node: NodeInfo?,
@@ -121,6 +125,20 @@ class VirshClient(
         ).firstOrNull()
 
     suspend fun start(name: String) = virsh("start", name)
+
+    /**
+     * Starts a VM like virt-manager does: any inactive libvirt network it is attached to is
+     * started first, since `virsh start` would otherwise fail with "network is not active".
+     * Returns the networks that had to be started.
+     */
+    suspend fun startWithNetworks(name: String): List<String> {
+        val wanted = Parsers.parseDomainXml(dumpXml(name, inactive = true)).interfaces
+            .filter { it.type == "network" }.mapNotNull { it.source }.toSet()
+        val started = if (wanted.isEmpty()) emptyList() else networks().filter { it.name in wanted && !it.active }.map { it.name }
+        started.forEach { startNetwork(it) }
+        start(name)
+        return started
+    }
     suspend fun shutdown(name: String) = virsh("shutdown", name)
     suspend fun reboot(name: String) = virsh("reboot", name)
     suspend fun reset(name: String) = virsh("reset", name)
@@ -209,6 +227,44 @@ class VirshClient(
     suspend fun createVolume(pool: String, name: String, sizeGiB: Int, format: String = "qcow2"): String {
         virsh("vol-create-as", pool, name, "${sizeGiB}G", "--format", format)
         return virsh("vol-path", "--pool", pool, name).trim()
+    }
+
+    /** A volume name based on [base] (e.g. "vm.qcow2") that doesn't exist in [pool] yet: vm.qcow2, vm-1.qcow2, ... */
+    suspend fun uniqueVolumeName(pool: String, base: String): String {
+        val taken = runCatching { volumes(pool).map { it.name }.toSet() }.getOrDefault(emptySet())
+        if (base !in taken) return base
+        val stem = base.substringBeforeLast('.')
+        val ext = base.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+        return generateSequence(1) { it + 1 }.map { "$stem-$it$ext" }.first { it !in taken }
+    }
+
+    // --- Host interfaces -------------------------------------------------------------------
+
+    /**
+     * Linux bridges on the host (from sysfs, so no netcf/root needed), excluding the ones libvirt
+     * creates for its own virtual networks. Null if the host couldn't be queried.
+     */
+    suspend fun hostBridges(libvirtBridges: Set<String> = emptySet()): List<String>? {
+        val r = runner.run("for d in /sys/class/net/*/bridge; do [ -d \"\$d\" ] && basename \"\$(dirname \"\$d\")\"; done; true", null)
+        if (!r.ok) return null
+        return r.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() && it !in libvirtBridges }.sorted()
+    }
+
+    // --- Editing definitions ---------------------------------------------------------------
+
+    /** Re-points a network card in the persistent definition (takes effect on next boot). */
+    suspend fun setInterface(name: String, index: Int, source: NetworkSource, model: String? = null) {
+        defineXml(DomainXmlEditor.setInterface(dumpXml(name, inactive = true), index, source, model))
+    }
+
+    /** Saves user-edited XML for [name]; refuses edits that would create or rename a VM instead. */
+    suspend fun redefine(name: String, uuid: String?, xml: String) {
+        val (newName, newUuid) = DomainXmlEditor.identity(xml)
+        if (newName != name) throw VirshException("Changing <name> here would create a new VM. Use Rename instead.")
+        if (uuid != null && newUuid != null && !newUuid.equals(uuid, ignoreCase = true)) {
+            throw VirshException("The <uuid> must not change.")
+        }
+        defineXml(xml)
     }
 
     /** All ISO images in active pools, used by the New VM wizard. */

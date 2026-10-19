@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -73,7 +75,7 @@ private val stepTitles = listOf("Install media", "Memory & CPU", "Storage", "Net
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NewVmScreen(connectionId: String, onDone: (String?) -> Unit) {
+fun NewVmScreen(connectionId: String, onDone: (Created?) -> Unit) {
     val app = app()
     val vm: NewVmViewModel = viewModel(key = "new-$connectionId") { NewVmViewModel(app, connectionId) }
     val env by vm.env.collectAsState()
@@ -88,15 +90,17 @@ fun NewVmScreen(connectionId: String, onDone: (String?) -> Unit) {
     var diskGiB by rememberSaveable { mutableFloatStateOf(20f) }
     var pool by rememberSaveable { mutableStateOf<String?>(null) }
     var network by rememberSaveable { mutableStateOf<String?>(null) } // "net:<name>", "br:<bridge>" or "none"
-    var bridge by rememberSaveable { mutableStateOf("br0") }
+    var bridge by rememberSaveable { mutableStateOf("") }
     var uefi by rememberSaveable { mutableStateOf(false) }
     var startAfter by rememberSaveable { mutableStateOf(true) }
+    var customize by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(env.loading) {
         if (!env.loading) {
             if (pool == null) pool = env.pools.firstOrNull { it.name == "default" }?.name ?: env.pools.firstOrNull()?.name
             if (network == null) network = env.networks.firstOrNull { it.name == "default" }?.let { "net:${it.name}" }
                 ?: env.networks.firstOrNull()?.let { "net:${it.name}" } ?: "br:"
+            if (bridge.isEmpty()) bridge = env.bridges?.firstOrNull().orEmpty()
             if (env.arch == "aarch64") uefi = true
         }
     }
@@ -115,9 +119,17 @@ fun NewVmScreen(connectionId: String, onDone: (String?) -> Unit) {
         name in env.existingNames -> "A VM with this name already exists"
         else -> null
     }
+    val bridgeError = when {
+        bridge.isBlank() -> "Enter the name of a bridge on the host"
+        env.bridges != null && bridge.trim() !in env.bridges!! ->
+            if (env.bridges!!.isEmpty()) "No bridges found on the host; use a virtual network instead"
+            else "Not a bridge on this host"
+        else -> null
+    }
     val stepValid = when (step) {
         0 -> name.isNotBlank() && nameError == null
         2 -> !createDisk || pool != null
+        3 -> network?.startsWith("br:") != true || bridgeError == null
         else -> true
     }
 
@@ -168,10 +180,12 @@ fun NewVmScreen(connectionId: String, onDone: (String?) -> Unit) {
                         Button(onClick = { step++ }, enabled = stepValid && !env.loading, modifier = Modifier.weight(1f)) { Text("Next") }
                     } else {
                         Button(
-                            onClick = { vm.create(buildSpec(), if (createDisk) diskGiB.roundToInt() else null, pool, startAfter) },
+                            onClick = {
+                                vm.create(buildSpec(), if (createDisk) diskGiB.roundToInt() else null, pool, startAfter, customize)
+                            },
                             enabled = env.progress == null && stepValid,
                             modifier = Modifier.weight(1f),
-                        ) { Text("Create") }
+                        ) { Text(if (customize) "Customize" else "Create") }
                     }
                 }
             }
@@ -287,18 +301,53 @@ fun NewVmScreen(connectionId: String, onDone: (String?) -> Unit) {
                         3 -> {
                             Text("Network", style = MaterialTheme.typography.titleSmall)
                             env.networks.forEach { n ->
-                                ChoiceRow("Virtual network \"${n.name}\"", if (n.active) "Active" else "Inactive", network == "net:${n.name}") { network = "net:${n.name}" }
+                                ChoiceRow(
+                                    "Virtual network \"${n.name}\"",
+                                    if (n.active) "Active" else "Inactive · started together with the VM",
+                                    network == "net:${n.name}",
+                                ) { network = "net:${n.name}" }
                             }
-                            ChoiceRow("Bridge device", "Attach to a host bridge", network?.startsWith("br:") == true) { network = "br:" }
+                            val bridges = env.bridges
+                            ChoiceRow(
+                                "Bridge device",
+                                when {
+                                    bridges == null -> "Attach to a host bridge"
+                                    bridges.isEmpty() -> "No bridges found on the host"
+                                    else -> "Host bridges: ${bridges.joinToString()}"
+                                },
+                                network?.startsWith("br:") == true,
+                            ) { network = "br:" }
                             if (network?.startsWith("br:") == true) {
-                                OutlinedTextField(bridge, { bridge = it }, label = { Text("Bridge name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                                if (!bridges.isNullOrEmpty()) {
+                                    Row(
+                                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        bridges.forEach { b ->
+                                            FilterChip(selected = bridge.trim() == b, onClick = { bridge = b }, label = { Text(b) })
+                                        }
+                                    }
+                                }
+                                OutlinedTextField(
+                                    bridge, { bridge = it },
+                                    label = { Text("Bridge name") },
+                                    isError = bridgeError != null,
+                                    supportingText = bridgeError?.let { { Text(it) } },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
                             }
                             ChoiceRow("No network", null, network == "none") { network = "none" }
 
                             if (env.arch != "aarch64") {
                                 SwitchRow("UEFI firmware", "Required for Secure Boot, Windows 11 and most modern OSes", uefi) { uefi = it }
                             }
-                            SwitchRow("Start after creation", null, startAfter) { startAfter = it }
+                            SwitchRow(
+                                "Customize configuration before install",
+                                "Open the VM's settings first; installation begins when you tap Begin installation",
+                                customize,
+                            ) { customize = it }
+                            if (!customize) SwitchRow("Start after creation", null, startAfter) { startAfter = it }
 
                             val spec = buildSpec()
                             SectionCard("Summary") {

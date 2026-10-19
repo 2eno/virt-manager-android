@@ -1,5 +1,7 @@
 package dev.virtmanager.android.ui.host
 
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -49,11 +51,14 @@ fun NetworksTab(state: HostUiState, vm: HostViewModel) {
                     )
                     if (details?.dhcpStart != null) InfoRow("DHCP", "${details.dhcpStart} – ${details.dhcpEnd}")
                     InfoRow("Persistent", if (net.persistent) "Yes" else "No")
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Autostart", Modifier.weight(1f))
-                        Switch(checked = net.autostart, onCheckedChange = { on ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.toggleable(value = net.autostart, role = Role.Switch) { on ->
                             vm.networkAction(net.name) { setNetworkAutostart(net.name, on) }
-                        })
+                        },
+                    ) {
+                        Text("Autostart", Modifier.weight(1f))
+                        Switch(checked = net.autostart, onCheckedChange = null)
                     }
                     Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxSize()) {
                         if (net.active) {

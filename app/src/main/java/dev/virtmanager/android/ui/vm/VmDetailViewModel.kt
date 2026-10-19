@@ -9,8 +9,10 @@ import dev.virtmanager.android.data.MetricsTracker
 import dev.virtmanager.android.libvirt.DomainDefinition
 import dev.virtmanager.android.libvirt.DomainInfo
 import dev.virtmanager.android.libvirt.DomainStats
+import dev.virtmanager.android.libvirt.NetworkSource
 import dev.virtmanager.android.libvirt.Snapshot
 import dev.virtmanager.android.libvirt.VirshClient
+import dev.virtmanager.android.libvirt.VirtualNetwork
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,14 +33,24 @@ data class VmUiState(
     val error: String? = null,
     val message: String? = null,
     val deleted: Boolean = false,
+    /** Created with "Customize configuration before install" and not started yet. */
+    val customizing: Boolean = false,
+    /** Set after Begin installation succeeds; the screen opens the console and clears it. */
+    val openConsole: Boolean = false,
+    val networkChoices: NetworkChoices? = null,
 )
+
+/** Where a network card can be connected: libvirt networks and the host's own bridges. */
+data class NetworkChoices(val networks: List<VirtualNetwork>, val bridges: List<String>?)
 
 class VmDetailViewModel(
     private val app: VirtManagerApp,
     private val connectionId: String,
     initialName: String,
+    notice: String? = null,
+    customize: Boolean = false,
 ) : ViewModel() {
-    private val _state = MutableStateFlow(VmUiState(initialName))
+    private val _state = MutableStateFlow(VmUiState(initialName, error = notice, customizing = customize))
     val state = _state.asStateFlow()
     private val tracker = MetricsTracker()
     private var pollJob: Job? = null
@@ -163,6 +175,41 @@ class VmDetailViewModel(
     fun createSnapshot(snap: String, description: String?) = snapshotOp("Snapshot \"$snap\" created") { createSnapshot(name, snap, description) }
     fun revertSnapshot(snap: String) = snapshotOp("Reverted to \"$snap\"") { revertSnapshot(name, snap) }
     fun deleteSnapshot(snap: String) = snapshotOp("Snapshot \"$snap\" deleted") { deleteSnapshot(name, snap) }
+
+    /** Starts the VM after customizing, bringing up any inactive virtual networks it uses first. */
+    fun beginInstallation() = viewModelScope.launch {
+        _state.update { it.copy(busy = true, error = null) }
+        try {
+            virsh().startWithNetworks(name)
+            _state.update { it.copy(customizing = false, openConsole = true, message = "Installation started") }
+            poll(withInfo = true)
+            reloadDefinition()
+        } catch (t: Throwable) {
+            _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+        } finally {
+            _state.update { it.copy(busy = false) }
+        }
+    }
+
+    fun consoleOpened() = _state.update { it.copy(openConsole = false) }
+
+    fun loadNetworkChoices() = viewModelScope.launch {
+        try {
+            val v = virsh()
+            val nets = v.networks()
+            val libvirtBridges = nets.mapNotNull { n -> runCatching { v.networkDetails(n.name).bridge }.getOrNull() }.toSet()
+            _state.update { it.copy(networkChoices = NetworkChoices(nets, v.hostBridges(libvirtBridges))) }
+        } catch (t: Throwable) {
+            _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+        }
+    }
+
+    fun setInterface(index: Int, source: NetworkSource, model: String?) {
+        val running = _state.value.stats?.state?.isActive == true
+        run(if (running) "Network card updated (applies on next boot)" else "Network card updated") {
+            setInterface(name, index, source, model)
+        }
+    }
 
     fun dismissError() = _state.update { it.copy(error = null) }
     fun dismissMessage() = _state.update { it.copy(message = null) }

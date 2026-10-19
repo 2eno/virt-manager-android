@@ -34,6 +34,7 @@ into typed models. Consoles reuse the same SSH session:
 | Lifecycle (start, shut down, reboot, pause/resume, save, reset, force off) | `virsh start/shutdown/...` |
 | Details, hardware, XML | `virsh dumpxml` parsed with a DOM parser |
 | Edit vCPUs / memory, CD-ROM insert/eject, rename, autostart, delete | `virsh setvcpus/setmem/change-media/domrename/autostart/undefine` |
+| Change a network card's source/model, edit the full XML | `virsh dumpxml --inactive` → edit → `virsh define` |
 | Snapshots | `virsh snapshot-*` |
 | New VM wizard | `virsh vol-create-as` + generated domain XML via `virsh define /dev/stdin` |
 | Networks and storage pools/volumes | `virsh net-*`, `pool-*`, `vol-*` |
@@ -54,11 +55,15 @@ argument is shell-quoted.
 - **Machines** – search, filter by state, per-VM CPU and memory sparklines, one-tap primary
   action plus a full action menu; confirmations for destructive actions.
 - **VM details** – Overview (CPU, memory, disk I/O and network tiles with history), Hardware
-  (CPU, memory, disks, NICs, displays), Snapshots, Settings (autostart, rename, XML, delete
-  with optional storage removal).
+  (CPU, memory, disks, NICs with source/model editing, displays), Snapshots, Settings
+  (autostart, rename, XML editor, delete with optional removal of the VM's own disk images).
 - **New VM wizard** – virt-manager's four steps: install media (ISOs discovered in the host's
   pools, or a path), memory and CPUs (bounded by the host), storage (qcow2 in a chosen pool),
-  network (virtual network / bridge / none) plus UEFI and start-after-create. OS-aware
+  network (virtual network / bridge / none) plus UEFI, start-after-create and **Customize
+  configuration before install** (define only, adjust it on the VM's page, then **Begin
+  installation**). Bridges are discovered on the host and validated before anything is created,
+  inactive networks are started with the VM, a failed step rolls back the new disk, leftover
+  images never block a retry, and KVM-less hosts get software-emulated guests. OS-aware
   defaults: virtio for Linux/BSD, SATA + e1000e + Hyper-V enlightenments for Windows, `virt`
   machine + UEFI on aarch64 hosts.
 - **Host** – host CPU and memory graphs, committed memory, hypervisor/libvirt versions, CPU
@@ -108,6 +113,7 @@ Opt-in integration tests run against real services when these variables are set:
 | `VMA_IT_SSH_PORT`, `VMA_IT_SSH_KEY` (`VMA_IT_SSH_USER`, default `root`) | sshd on 127.0.0.1 with `virsh` installed. `SshIntegrationTest` uses `test:///default` to cover host-key TOFU, polling, XML, stdin, PTY and port forwarding. |
 | `VMA_IT_VNC_PORT`, `VMA_IT_VNC_PW_PORT` + `VMA_IT_VNC_PW` | QEMU VNC displays (e.g. `qemu-system-x86_64 -display none -vnc 127.0.0.1:5`). `QemuVncIntegrationTest` renders the framebuffer and checks VNC password auth through the SSH tunnel. |
 | `VMA_IT_TESTNODE` | Path to a libvirt test-driver node XML on that host; `AppScreenshotTest` runs the app under Robolectric and records `docs/screenshots`. |
+| `VMA_IT_REAL_URI` | A real libvirtd URI on that host (e.g. `qemu:///system`, with a `default` pool holding an ISO). `RealHostWizardTest` drives the New VM wizard through bridge validation, inactive networks, leftover images, a VM that fails to start, NIC editing, the XML editor and customize-before-install. It creates and deletes its own VMs. |
 
 ## Project layout
 
@@ -128,4 +134,4 @@ app/src/main/java/dev/virtmanager/android/
   which QEMU always offers. SSH compression is enabled by default to keep this fast.
 - Talks to libvirt via `virsh` rather than the libvirt RPC protocol, so the host needs
   `virsh` and SSH access (exactly what `qemu+ssh://` in virt-manager needs as well).
-- Migration, device hot-plug, and advanced XML editing are not implemented yet.
+- Migration and device hot-plug are not implemented yet.

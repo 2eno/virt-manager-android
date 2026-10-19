@@ -4,6 +4,9 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Surface
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -67,9 +70,14 @@ fun VmDetailScreen(
     onBack: () -> Unit,
     onConsole: (String) -> Unit,
     onSerial: (String) -> Unit,
+    onEditXml: (String) -> Unit,
+    notice: String? = null,
+    customize: Boolean = false,
 ) {
     val app = app()
-    val vm: VmDetailViewModel = viewModel(key = "vm-$connectionId-$vmName") { VmDetailViewModel(app, connectionId, vmName) }
+    val vm: VmDetailViewModel = viewModel(key = "vm-$connectionId-$vmName") {
+        VmDetailViewModel(app, connectionId, vmName, notice, customize)
+    }
     val state by vm.state.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var pending by remember { mutableStateOf<DomainAction?>(null) }
@@ -83,6 +91,16 @@ fun VmDetailScreen(
     }
     LaunchedEffect(state.message) { state.message?.let { snackbar.showSnackbar(it); vm.dismissMessage() } }
     LaunchedEffect(state.deleted) { if (state.deleted) onBack() }
+    // After Begin installation, go straight to the installer's screen like virt-manager does.
+    LaunchedEffect(state.openConsole, state.definition) {
+        if (!state.openConsole) return@LaunchedEffect
+        val d = state.definition ?: return@LaunchedEffect
+        vm.consoleOpened()
+        when {
+            d.vnc != null -> onConsole(state.name)
+            d.hasSerialConsole -> onSerial(state.name)
+        }
+    }
 
     val domainState = state.stats?.state ?: state.info?.state ?: DomainState.NO_STATE
     val active = domainState.isActive
@@ -123,8 +141,11 @@ fun VmDetailScreen(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                StateBadge(domainState)
-                Spacer(Modifier.width(12.dp))
+                // Don't flash "No state" before the first poll has answered.
+                if (state.stats != null || state.info != null) {
+                    StateBadge(domainState)
+                    Spacer(Modifier.width(12.dp))
+                }
                 Text(
                     listOfNotNull(
                         state.definition?.let { d -> d.vcpus?.let { "$it vCPU" } },
@@ -135,7 +156,9 @@ fun VmDetailScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Row(
+            if (state.customizing && !active) {
+                CustomizeBanner(busy = state.busy, onBegin = vm::beginInstallation)
+            } else Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -164,7 +187,7 @@ fun VmDetailScreen(
                 0 -> VmOverviewTab(state)
                 1 -> VmHardwareTab(state, vm)
                 2 -> VmSnapshotsTab(state, vm)
-                3 -> VmSettingsTab(state, vm)
+                3 -> VmSettingsTab(state, vm, onEditXml = { onEditXml(state.name) })
             }
         }
     }
@@ -188,5 +211,31 @@ fun VmDetailScreen(
             onConfirm = { vm.action(a.label, a.run); pending = null },
             onDismiss = { pending = null },
         )
+    }
+}
+
+@Composable
+private fun CustomizeBanner(busy: Boolean, onBegin: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Customize before install", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Adjust CPUs, memory, install media and network cards on the Hardware tab, or edit the XML " +
+                    "in Settings. Nothing runs until you begin the installation.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = onBegin, enabled = !busy) {
+                Icon(Icons.Outlined.PlayArrow, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Begin installation")
+            }
+        }
     }
 }
