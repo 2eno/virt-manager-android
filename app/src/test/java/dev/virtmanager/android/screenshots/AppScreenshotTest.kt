@@ -149,7 +149,8 @@ class AppScreenshotTest {
         shot("07-vm-overview")
 
         compose.onNodeWithText("Hardware").performClick()
-        waitForText("Processor & memory")
+        waitForText("Boot options")
+        tick(1)
         shot("08-vm-hardware")
 
         compose.onNodeWithContentDescription("Back").performClick()

@@ -9,10 +9,10 @@ import dev.virtmanager.android.data.MetricsTracker
 import dev.virtmanager.android.libvirt.DomainDefinition
 import dev.virtmanager.android.libvirt.DomainInfo
 import dev.virtmanager.android.libvirt.DomainStats
-import dev.virtmanager.android.libvirt.NetworkSource
 import dev.virtmanager.android.libvirt.Snapshot
+import dev.virtmanager.android.libvirt.Parsers
 import dev.virtmanager.android.libvirt.VirshClient
-import dev.virtmanager.android.libvirt.VirtualNetwork
+import dev.virtmanager.android.ui.components.deletableDisks
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,11 +37,8 @@ data class VmUiState(
     val customizing: Boolean = false,
     /** Set after Begin installation succeeds; the screen opens the console and clears it. */
     val openConsole: Boolean = false,
-    val networkChoices: NetworkChoices? = null,
 )
 
-/** Where a network card can be connected: libvirt networks and the host's own bridges. */
-data class NetworkChoices(val networks: List<VirtualNetwork>, val bridges: List<String>?)
 
 class VmDetailViewModel(
     private val app: VirtManagerApp,
@@ -64,6 +61,8 @@ class VmDetailViewModel(
 
     fun startPolling() {
         if (pollJob?.isActive == true) return
+        // Coming back from a hardware page: the configuration may have changed.
+        reloadDefinition()
         pollJob = viewModelScope.launch {
             var tick = 0
             while (isActive) {
@@ -97,7 +96,7 @@ class VmDetailViewModel(
     fun reloadDefinition() = viewModelScope.launch {
         try {
             val xml = virsh().dumpXml(name)
-            _state.update { it.copy(xml = xml, definition = dev.virtmanager.android.libvirt.Parsers.parseDomainXml(xml)) }
+            _state.update { it.copy(xml = xml, definition = Parsers.parseDomainXml(xml)) }
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t)) }
         }
@@ -120,9 +119,6 @@ class VmDetailViewModel(
     fun action(label: String, action: suspend VirshClient.(String) -> Unit) = run(label) { action(name) }
 
     fun setAutostart(on: Boolean) = run(if (on) "Autostart enabled" else "Autostart disabled", reload = false) { setAutostart(name, on) }
-    fun setVcpus(n: Int) = run("vCPUs set to $n (applies on next boot)") { setVcpus(name, n) }
-    fun setMemory(mib: Long) = run("Memory set to $mib MiB (applies on next boot)") { setMemory(name, mib) }
-    fun changeMedia(target: String, path: String?) = run(if (path == null) "Media ejected" else "Media inserted") { changeMedia(name, target, path) }
 
     fun rename(newName: String) = viewModelScope.launch {
         _state.update { it.copy(busy = true) }
@@ -193,21 +189,17 @@ class VmDetailViewModel(
 
     fun consoleOpened() = _state.update { it.copy(openConsole = false) }
 
-    fun loadNetworkChoices() = viewModelScope.launch {
+    /** virt-manager's "Cancel installation": removes the VM and the disk images it was given. */
+    fun cancelInstallation() = viewModelScope.launch {
+        _state.update { it.copy(busy = true) }
         try {
+            // Read the saved configuration now: disks may have been added while customizing.
             val v = virsh()
-            val nets = v.networks()
-            val libvirtBridges = nets.mapNotNull { n -> runCatching { v.networkDetails(n.name).bridge }.getOrNull() }.toSet()
-            _state.update { it.copy(networkChoices = NetworkChoices(nets, v.hostBridges(libvirtBridges))) }
+            val disks = deletableDisks(Parsers.parseDomainXml(v.dumpXml(name, inactive = true)).disks).mapNotNull { it.target }
+            v.undefine(name, disks)
+            _state.update { it.copy(deleted = true) }
         } catch (t: Throwable) {
-            _state.update { it.copy(error = ConnectionManager.friendly(t)) }
-        }
-    }
-
-    fun setInterface(index: Int, source: NetworkSource, model: String?) {
-        val running = _state.value.stats?.state?.isActive == true
-        run(if (running) "Network card updated (applies on next boot)" else "Network card updated") {
-            setInterface(name, index, source, model)
+            _state.update { it.copy(error = ConnectionManager.friendly(t), busy = false) }
         }
     }
 

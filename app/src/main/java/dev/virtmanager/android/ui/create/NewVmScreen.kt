@@ -69,6 +69,7 @@ import dev.virtmanager.android.ui.components.ErrorBanner
 import dev.virtmanager.android.ui.components.InfoRow
 import dev.virtmanager.android.ui.components.SectionCard
 import dev.virtmanager.android.ui.connections.SwitchRow
+import dev.virtmanager.android.ui.hw.CheckRow
 import kotlin.math.roundToInt
 
 private val stepTitles = listOf("Install media", "Memory & CPU", "Storage", "Network & finish")
@@ -342,12 +343,13 @@ fun NewVmScreen(connectionId: String, onDone: (Created?) -> Unit) {
                             if (env.arch != "aarch64") {
                                 SwitchRow("UEFI firmware", "Required for Secure Boot, Windows 11 and most modern OSes", uefi) { uefi = it }
                             }
-                            SwitchRow(
-                                "Customize configuration before install",
-                                "Open the VM's settings first; installation begins when you tap Begin installation",
-                                customize,
-                            ) { customize = it }
                             if (!customize) SwitchRow("Start after creation", null, startAfter) { startAfter = it }
+                            CheckRow(
+                                "Customize configuration before install",
+                                customize,
+                                { customize = it },
+                                supporting = "Review and change the virtual hardware first; installation begins with Begin installation",
+                            )
 
                             val spec = buildSpec()
                             SectionCard("Summary") {

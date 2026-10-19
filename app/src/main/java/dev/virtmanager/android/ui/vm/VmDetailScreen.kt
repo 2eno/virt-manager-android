@@ -36,6 +36,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,11 +57,13 @@ import dev.virtmanager.android.libvirt.DomainState
 import dev.virtmanager.android.ui.app
 import dev.virtmanager.android.ui.components.ConfirmDialog
 import dev.virtmanager.android.ui.components.DeleteVmDialog
+import dev.virtmanager.android.ui.hw.HardwareList
 import dev.virtmanager.android.ui.components.DomainAction
 import dev.virtmanager.android.ui.components.ErrorBanner
 import dev.virtmanager.android.ui.components.StateBadge
 
-private val tabs = listOf("Overview", "Hardware", "Snapshots", "Settings")
+// "Overview" is the first page of the Hardware tab, as in virt-manager; this tab is live status.
+private val tabs = listOf("Status", "Hardware", "Snapshots", "Settings")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,6 +74,7 @@ fun VmDetailScreen(
     onConsole: (String) -> Unit,
     onSerial: (String) -> Unit,
     onEditXml: (String) -> Unit,
+    onHardware: (name: String, page: String) -> Unit,
     notice: String? = null,
     customize: Boolean = false,
 ) {
@@ -83,6 +87,7 @@ fun VmDetailScreen(
     var pending by remember { mutableStateOf<DomainAction?>(null) }
     var menu by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
+    var cancelling by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
 
     LifecycleResumeEffect(vm) {
@@ -157,7 +162,7 @@ fun VmDetailScreen(
                 )
             }
             if (state.customizing && !active) {
-                CustomizeBanner(busy = state.busy, onBegin = vm::beginInstallation)
+                CustomizeBanner(busy = state.busy, onBegin = vm::beginInstallation, onCancel = { cancelling = true })
             } else Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -185,11 +190,22 @@ fun VmDetailScreen(
             }
             when (tab) {
                 0 -> VmOverviewTab(state)
-                1 -> VmHardwareTab(state, vm)
+                1 -> HardwareList(connectionId, state.name, onOpen = { onHardware(state.name, it) })
                 2 -> VmSnapshotsTab(state, vm)
                 3 -> VmSettingsTab(state, vm, onEditXml = { onEditXml(state.name) })
             }
         }
+    }
+
+    if (cancelling) {
+        ConfirmDialog(
+            title = "Cancel installation?",
+            message = "\"${state.name}\" and its disk images are deleted again. Install media (ISO files) are kept.",
+            confirmLabel = "Cancel installation",
+            destructive = true,
+            onConfirm = { cancelling = false; vm.cancelInstallation() },
+            onDismiss = { cancelling = false },
+        )
     }
 
     if (deleting) {
@@ -215,7 +231,7 @@ fun VmDetailScreen(
 }
 
 @Composable
-private fun CustomizeBanner(busy: Boolean, onBegin: () -> Unit) {
+private fun CustomizeBanner(busy: Boolean, onBegin: () -> Unit, onCancel: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -226,15 +242,18 @@ private fun CustomizeBanner(busy: Boolean, onBegin: () -> Unit) {
             Text("Customize before install", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Adjust CPUs, memory, install media and network cards on the Hardware tab, or edit the XML " +
-                    "in Settings. Nothing runs until you begin the installation.",
+                "Review the virtual hardware on the Hardware tab: change any device, remove it, or use " +
+                    "Add Hardware. Nothing runs until you begin the installation.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(12.dp))
-            Button(onClick = onBegin, enabled = !busy) {
-                Icon(Icons.Outlined.PlayArrow, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Begin installation")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onBegin, enabled = !busy) {
+                    Icon(Icons.Outlined.PlayArrow, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Begin installation")
+                }
+                TextButton(onClick = onCancel, enabled = !busy) { Text("Cancel installation") }
             }
         }
     }

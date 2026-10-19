@@ -1,5 +1,11 @@
 package dev.virtmanager.android.libvirt
 
+import dev.virtmanager.android.libvirt.config.DomainCapabilities
+import dev.virtmanager.android.libvirt.config.DomainConfig
+import dev.virtmanager.android.libvirt.config.HostDevice
+import dev.virtmanager.android.libvirt.config.HostInventory
+import dev.virtmanager.android.libvirt.config.OsVariant
+
 /**
  * A thin, typed wrapper around the `virsh` CLI executed on the remote host. This is the Android
  * equivalent of virt-manager's libvirt bindings: rather than shipping libvirt for Android, all
@@ -114,8 +120,13 @@ class VirshClient(
     // --- Domains ---------------------------------------------------------------------------
 
     suspend fun domInfo(name: String) = Parsers.parseDomInfo(virsh("dominfo", name))
+    /**
+     * The domain XML. The persistent ([inactive]) form is what edits are based on, so it includes
+     * secrets such as VNC/SPICE passwords: without `--security-info` they would be silently lost
+     * when the edited XML is defined again.
+     */
     suspend fun dumpXml(name: String, inactive: Boolean = false): String =
-        if (inactive) virsh("dumpxml", "--inactive", name) else virsh("dumpxml", name)
+        if (inactive) virsh("dumpxml", "--inactive", "--security-info", name) else virsh("dumpxml", name)
 
     suspend fun definition(name: String) = Parsers.parseDomainXml(dumpXml(name))
 
@@ -162,17 +173,6 @@ class VirshClient(
             // Older libvirt doesn't know --nvram for BIOS guests; retry with a minimal set.
             virsh(*(listOf("undefine", name) + storage).toTypedArray())
         }
-    }
-
-    suspend fun setVcpus(name: String, count: Int) {
-        virsh("setvcpus", name, count.toString(), "--maximum", "--config")
-        virsh("setvcpus", name, count.toString(), "--config")
-    }
-
-    suspend fun setMemory(name: String, mib: Long) {
-        val kib = (mib * 1024).toString()
-        virsh("setmaxmem", name, kib, "--config")
-        virsh("setmem", name, kib, "--config")
     }
 
     suspend fun rename(name: String, newName: String) = virsh("domrename", name, newName)
@@ -252,11 +252,6 @@ class VirshClient(
 
     // --- Editing definitions ---------------------------------------------------------------
 
-    /** Re-points a network card in the persistent definition (takes effect on next boot). */
-    suspend fun setInterface(name: String, index: Int, source: NetworkSource, model: String? = null) {
-        defineXml(DomainXmlEditor.setInterface(dumpXml(name, inactive = true), index, source, model))
-    }
-
     /** Saves user-edited XML for [name]; refuses edits that would create or rename a VM instead. */
     suspend fun redefine(name: String, uuid: String?, xml: String) {
         val (newName, newUuid) = DomainXmlEditor.identity(xml)
@@ -266,6 +261,43 @@ class VirshClient(
         }
         defineXml(xml)
     }
+
+    // --- Full configuration editing (virt-manager's details window) ------------------------
+
+    suspend fun inactiveConfig(name: String) = DomainConfig.parse(dumpXml(name, inactive = true))
+
+    /** Saves an edited configuration of [name]; the identity checks of [redefine] apply. */
+    suspend fun saveConfig(name: String, config: DomainConfig) = redefine(name, config.uuid, config.toXml())
+
+    /** Host USB devices and PCI devices that can be passed through. */
+    suspend fun hostDevices(type: String): List<HostDevice> {
+        val cap = if (type == "usb") "usb_device" else "pci"
+        val names = virsh("nodedev-list", "--cap", cap).lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (names.isEmpty()) return emptyList()
+        return batch(*names.map { listOf("nodedev-dumpxml", it) }.toTypedArray())
+            .mapNotNull { it?.let(HostInventory::parseNodedev) }
+            // Root hubs can't be passed through.
+            .filterNot { it.type == "usb" && it.settings.vendorId == "0x1d6b" }
+    }
+
+    /** OS variants from the host's libosinfo, or a built-in list if it isn't installed. */
+    suspend fun osVariants(): List<OsVariant> {
+        val r = runner.run("osinfo-query os -f short-id,name,id 2>/dev/null", null)
+        val parsed = if (r.ok) HostInventory.parseOsinfoQuery(r.stdout) else emptyList()
+        return parsed.ifEmpty { HostInventory.fallbackOs }.sortedBy { it.name.lowercase() }
+    }
+
+    /** Hypervisor capabilities for a VM like [config] (virt type, arch and machine). */
+    suspend fun domainCapabilities(config: DomainConfig): DomainCapabilities = runCatching {
+        val args = mutableListOf("domcapabilities")
+        config.domainType?.let { args += listOf("--virttype", it) }
+        config.arch?.let { args += listOf("--arch", it) }
+        config.machine?.let { args += listOf("--machine", it) }
+        DomainCapabilities.parse(virsh(*args.toTypedArray()))
+    }.getOrDefault(DomainCapabilities.UNKNOWN)
+
+    suspend fun cpuModels(arch: String): List<String> =
+        runCatching { virsh("cpu-models", arch).lines().map { it.trim() }.filter { it.isNotEmpty() } }.getOrDefault(emptyList())
 
     /** All ISO images in active pools, used by the New VM wizard. */
     suspend fun isoImages(): List<StorageVolume> =

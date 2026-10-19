@@ -21,6 +21,9 @@ import dev.virtmanager.android.ui.create.NewVmScreen
 import dev.virtmanager.android.ui.host.HostScreen
 import dev.virtmanager.android.ui.vm.VmDetailScreen
 import dev.virtmanager.android.ui.vm.XmlEditorScreen
+import dev.virtmanager.android.ui.hw.AddHardwareScreen
+import dev.virtmanager.android.ui.hw.HwPageScreen
+import dev.virtmanager.android.ui.hw.HwPages
 import kotlinx.serialization.Serializable
 
 @Serializable object ConnectionsRoute
@@ -35,6 +38,8 @@ import kotlinx.serialization.Serializable
     val customize: Boolean = false,
 )
 @Serializable data class XmlEditRoute(val connectionId: String, val name: String)
+/** One page of a VM's hardware details; see [dev.virtmanager.android.ui.hw.HwPages]. */
+@Serializable data class HwRoute(val connectionId: String, val name: String, val page: String)
 @Serializable data class NewVmRoute(val connectionId: String)
 @Serializable data class VncRoute(val connectionId: String, val name: String)
 @Serializable data class SerialRoute(val connectionId: String, val name: String)
@@ -84,7 +89,13 @@ fun AppNavigation() {
                 onConsole = { nav.navigate(VncRoute(r.connectionId, it)) },
                 onSerial = { nav.navigate(SerialRoute(r.connectionId, it)) },
                 onEditXml = { nav.navigate(XmlEditRoute(r.connectionId, it)) },
+                onHardware = { name, page -> nav.navigate(HwRoute(r.connectionId, name, page)) },
             )
+        }
+        composable<HwRoute> { entry ->
+            val r = entry.toRoute<HwRoute>()
+            if (r.page == HwPages.ADD) AddHardwareScreen(r.connectionId, r.name, onBack = { nav.popBackStack() })
+            else HwPageScreen(r.connectionId, r.name, r.page, onBack = { nav.popBackStack() })
         }
         composable<XmlEditRoute> { entry ->
             val r = entry.toRoute<XmlEditRoute>()

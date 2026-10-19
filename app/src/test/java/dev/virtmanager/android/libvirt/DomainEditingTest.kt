@@ -30,33 +30,6 @@ class DomainEditingTest {
         </domain>
     """.trimIndent()
 
-    @Test fun bridgeToNetworkKeepsMacAndDropsRuntimeTarget() {
-        val out = DomainXmlEditor.setInterface(xml, 0, NetworkSource.Virtual("default"), model = "virtio")
-        val nic = Parsers.parseDomainXml(out).interfaces[0]
-        assertEquals("network", nic.type)
-        assertEquals("default", nic.source)
-        assertEquals("52:54:00:aa:bb:cc", nic.mac)
-        assertEquals("virtio", nic.model)
-        assertNull(nic.target)
-        assertFalse(out.contains("bridge='br0'") || out.contains("bridge=\"br0\""))
-        // The other NIC is untouched.
-        assertEquals("default", Parsers.parseDomainXml(out).interfaces[1].source)
-    }
-
-    @Test fun networkToBridgeAddsModelWhenMissing() {
-        val out = DomainXmlEditor.setInterface(xml, 1, NetworkSource.Bridge("br-home"), model = "virtio")
-        val nic = Parsers.parseDomainXml(out).interfaces[1]
-        assertEquals("bridge", nic.type)
-        assertEquals("br-home", nic.source)
-        assertEquals("virtio", nic.model)
-        assertEquals("52:54:00:11:22:33", nic.mac)
-    }
-
-    @Test fun keepsModelWhenNotGiven() {
-        val out = DomainXmlEditor.setInterface(xml, 0, NetworkSource.Bridge("br-home"))
-        assertEquals("e1000e", Parsers.parseDomainXml(out).interfaces[0].model)
-    }
-
     @Test fun identity() {
         assertEquals("AI-Chat" to "11111111-2222-3333-4444-555555555555", DomainXmlEditor.identity(xml))
         assertTrue(runCatching { DomainXmlEditor.identity("<network><name>x</name></network>") }.isFailure)

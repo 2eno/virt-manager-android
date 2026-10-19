@@ -17,6 +17,11 @@ create VMs, take snapshots, and open the graphical (VNC) or serial console.
   <img src="docs/screenshots/09-new-vm-media.png" width="200" alt="New VM wizard">
   <img src="docs/screenshots/06-storage.png" width="200" alt="Storage">
 </p>
+<p>
+  <img src="docs/screenshots/14-hw-overview.png" width="200" alt="Hardware: Overview page">
+  <img src="docs/screenshots/15-add-hardware.png" width="200" alt="Add Hardware">
+  <img src="docs/screenshots/13-delete-vm.png" width="200" alt="Delete VM">
+</p>
 
 > The screenshots are recorded by `AppScreenshotTest`, which drives the real app over real SSH
 > against libvirt's built-in test driver.
@@ -34,7 +39,7 @@ into typed models. Consoles reuse the same SSH session:
 | Lifecycle (start, shut down, reboot, pause/resume, save, reset, force off) | `virsh start/shutdown/...` |
 | Details, hardware, XML | `virsh dumpxml` parsed with a DOM parser |
 | Edit vCPUs / memory, CD-ROM insert/eject, rename, autostart, delete | `virsh setvcpus/setmem/change-media/domrename/autostart/undefine` |
-| Change a network card's source/model, edit the full XML | `virsh dumpxml --inactive` → edit → `virsh define` |
+| virt-manager's details pages (Overview, OS information, CPUs, Memory, Boot options, every device), Add Hardware, Remove, per-device and full XML editing | `virsh dumpxml --inactive --security-info` → edit → `virsh define`; options filtered by `virsh domcapabilities` |
 | Snapshots | `virsh snapshot-*` |
 | New VM wizard | `virsh vol-create-as` + generated domain XML via `virsh define /dev/stdin` |
 | Networks and storage pools/volumes | `virsh net-*`, `pool-*`, `vol-*` |
@@ -54,14 +59,31 @@ argument is shell-quoted.
   in the Android Keystore; backups of app data are disabled.
 - **Machines** – search, filter by state, per-VM CPU and memory sparklines, one-tap primary
   action plus a full action menu; confirmations for destructive actions.
-- **VM details** – Overview (CPU, memory, disk I/O and network tiles with history), Hardware
-  (CPU, memory, disks, NICs with source/model editing, displays), Snapshots, Settings
-  (autostart, rename, XML editor, delete with optional removal of the VM's own disk images).
+- **VM details** – Status (CPU, memory, disk I/O and network tiles with history), Hardware,
+  Snapshots, Settings (autostart, rename, XML editor, delete with optional removal of the VM's
+  own disk images).
+- **Hardware** – the same list as virt-manager's details window, each entry with a Details form
+  (and an XML tab for devices) plus Remove:
+  - *Overview*: title, description, chipset (Q35/i440FX), firmware (BIOS/UEFI/Secure Boot)
+  - *OS information* (libosinfo variant), *CPUs* (current/maximum vCPUs, host-passthrough,
+    host-model, maximum or a named model, manual topology), *Memory* (current/maximum, shared
+    memory), *Boot options* (autostart, boot menu, device boot order)
+  - disks and CD-ROMs (source, bus, format, cache, discard, read-only, shareable, serial; live
+    media change), NICs (virtual network/bridge/macvtap, model, MAC, link state), input,
+    graphics (VNC/SPICE, listen, port, password, OpenGL), sound, video (model, heads, 3D),
+    serial/parallel/console/channels, controllers, USB redirection, RNG, watchdog, TPM,
+    filesystem (virtiofs/9p), panic notifier, VSOCK, smartcard, host devices
+  - **Add Hardware** with every type virt-manager offers: storage (new image or existing),
+    controller, network, input, graphics, sound, serial, parallel, console, channel, USB and
+    PCI host devices (listed from the host), video, watchdog, filesystem, smartcard, USB
+    redirection, TPM, RNG, panic notifier, VirtIO VSOCK
+  - option lists come from the host's `domcapabilities`, so only what the hypervisor supports
+    is offered; SPICE-only features are only offered with a SPICE display
 - **New VM wizard** – virt-manager's four steps: install media (ISOs discovered in the host's
   pools, or a path), memory and CPUs (bounded by the host), storage (qcow2 in a chosen pool),
   network (virtual network / bridge / none) plus UEFI, start-after-create and **Customize
-  configuration before install** (define only, adjust it on the VM's page, then **Begin
-  installation**). Bridges are discovered on the host and validated before anything is created,
+  configuration before install** (define only, review all hardware as above, then **Begin
+  installation** or **Cancel installation**). Bridges are discovered on the host and validated before anything is created,
   inactive networks are started with the VM, a failed step rolls back the new disk, leftover
   images never block a retry, and KVM-less hosts get software-emulated guests. OS-aware
   defaults: virtio for Linux/BSD, SATA + e1000e + Hyper-V enlightenments for Windows, `virt`
@@ -113,7 +135,7 @@ Opt-in integration tests run against real services when these variables are set:
 | `VMA_IT_SSH_PORT`, `VMA_IT_SSH_KEY` (`VMA_IT_SSH_USER`, default `root`) | sshd on 127.0.0.1 with `virsh` installed. `SshIntegrationTest` uses `test:///default` to cover host-key TOFU, polling, XML, stdin, PTY and port forwarding. |
 | `VMA_IT_VNC_PORT`, `VMA_IT_VNC_PW_PORT` + `VMA_IT_VNC_PW` | QEMU VNC displays (e.g. `qemu-system-x86_64 -display none -vnc 127.0.0.1:5`). `QemuVncIntegrationTest` renders the framebuffer and checks VNC password auth through the SSH tunnel. |
 | `VMA_IT_TESTNODE` | Path to a libvirt test-driver node XML on that host; `AppScreenshotTest` runs the app under Robolectric and records `docs/screenshots`. |
-| `VMA_IT_REAL_URI` | A real libvirtd URI on that host (e.g. `qemu:///system`, with a `default` pool holding an ISO). `RealHostWizardTest` drives the New VM wizard through bridge validation, inactive networks, leftover images, a VM that fails to start, NIC editing, the XML editor and customize-before-install. It creates and deletes its own VMs. |
+| `VMA_IT_REAL_URI` | A real libvirtd URI on that host (e.g. `qemu:///system`, with a `default` pool holding an ISO). `RealHostWizardTest` drives the New VM wizard through bridge validation, inactive networks, leftover images, a VM that fails to start, customize-before-install, the hardware pages, Add Hardware, Remove, the XML editors and Cancel installation. `RealLibvirtConfigTest` (local `virsh`) saves every editor field and all Add Hardware types through libvirt and boots an edited VM. Both create and delete their own VMs. |
 
 ## Project layout
 

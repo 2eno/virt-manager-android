@@ -7,6 +7,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -23,6 +24,7 @@ import dev.virtmanager.android.data.ConnectionProfile
 import dev.virtmanager.android.data.SecretCipher
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -60,7 +62,7 @@ class RealHostWizardTest {
     @Before fun setUp() {
         assumeTrue(port != null && key != null && uri != null)
         FakeAndroidKeyStore.install()
-        listOf("AI-Chat", "AI-Chat2", "AI-Chat3", "custom-vm", "renamed").forEach(::cleanup)
+        listOf("AI-Chat", "AI-Chat2", "AI-Chat3", "custom-vm", "renamed", "hw-vm").forEach(::cleanup)
         // A libvirt network that starts fine but points at a bridge the host doesn't have: guests
         // on it fail with the reported "Cannot get interface MTU on 'br0': No such device".
         virsh("net-destroy", "broken"); virsh("net-undefine", "broken")
@@ -108,6 +110,24 @@ class RealHostWizardTest {
         waitForText(text)
         val node = compose.onAllNodesWithText(text, useUnmergedTree = true).onFirst()
         runCatching { node.performScrollTo() } // only possible inside scrolling containers
+        node.performClick()
+        idle()
+    }
+
+    /** Clicks the first node whose text starts with [prefix], e.g. "NIC " for "NIC :12:34:56". */
+    private fun clickPrefix(prefix: String) {
+        waitForText(prefix)
+        val node = compose.onAllNodes(hasText(prefix, substring = true), useUnmergedTree = true).onFirst()
+        runCatching { node.performScrollTo() }
+        node.performClick()
+        idle()
+    }
+
+    /** Clicks the last matching node: the button, not a sentence that mentions it. */
+    private fun clickButton(text: String) {
+        waitForText(text)
+        val node = compose.onAllNodesWithText(text, useUnmergedTree = true).let { it[it.fetchSemanticsNodes().size - 1] }
+        runCatching { node.performScrollTo() }
         node.performClick()
         idle()
     }
@@ -189,14 +209,16 @@ class RealHostWizardTest {
         click("Create")
         waitForText("Created, but it failed to start")
         waitForText("Cannot get interface MTU on 'br0'")
-        shot("7-start-failed-on-vm-page")
+        shot("8-start-failed-on-vm-page")
         assertEquals("shut off", virsh("domstate", "AI-Chat3").trim())
         click("Dismiss")
         click("Hardware")
-        click("Change…")
-        click("Virtual network \"default\"")
+        clickPrefix("NIC ")
+        waitForText("Network source")
+        click("default")
         click("Apply")
-        waitForText("Network card updated")
+        waitForText("Boot options") // back on the VM page's hardware list
+        assertTrue(virsh("dumpxml", "--inactive", "AI-Chat3").contains("network='default'"))
         click("Start")
         compose.waitUntil(60_000) { idle(); virsh("domstate", "AI-Chat3").trim() == "running" }
     }
@@ -212,13 +234,14 @@ class RealHostWizardTest {
 
         // Network card: switch the model (the only network here is "default").
         click("Hardware")
-        waitForText("Processor & memory")
-        click("Change…")
+        waitForText("Boot options")
+        shot("5-hardware-list")
+        clickPrefix("NIC ")
         waitForText("Device model")
         click("e1000e")
-        shot("5-network-dialog")
+        shot("6-nic-page")
         click("Apply")
-        waitForText("Network card updated")
+        waitForText("Boot options")
         assertTrue(virsh("dumpxml", "--inactive", "custom-vm").contains("<model type='e1000e'/>"))
 
         // XML editor: a rename is refused and the draft kept; a valid change is saved.
@@ -230,7 +253,7 @@ class RealHostWizardTest {
         editor.performTextReplacement(xml.replace("<name>custom-vm</name>", "<name>renamed</name>"))
         click("Save")
         waitForText("Use Rename instead")
-        shot("6-xml-rename-refused")
+        shot("7-xml-rename-refused")
         editor.performTextReplacement(xml.replace("<description>", "<description>").let {
             if (it.contains("<description>")) it else it.replace("</uuid>", "</uuid>\n  <description>edited on Android</description>")
         })
@@ -247,5 +270,89 @@ class RealHostWizardTest {
         shot("4-console-after-begin")
         assertEquals("running", virsh("domstate", "custom-vm").trim())
         assertTrue(virsh("net-list", "--name").lines().contains("default"))
+    }
+
+    @Test fun hardwarePages() {
+        connect()
+        wizardTo4("hw-vm")
+        click("Customize configuration before install")
+        click("Customize")
+        waitForText("Begin installation")
+
+        // Overview: title + firmware (allowed while shut off)
+        click("Hardware")
+        waitForText("Boot options")
+        click("Overview")
+        waitForText("Hypervisor details")
+        compose.onAllNodes(hasText("Title")).onFirst().performTextInput("Edited on a phone")
+        click("UEFI")
+        shot("9-overview-page")
+        click("Apply")
+        waitForText("Boot options")
+        var xml = virsh("dumpxml", "--inactive", "hw-vm")
+        assertTrue(xml, xml.contains("<title>Edited on a phone</title>") && xml.contains("firmware='efi'"))
+
+        // CPUs: 1 of 4 vCPUs with a manual topology
+        click("CPUs")
+        waitForText("vCPU allocation")
+        compose.onAllNodes(hasText("Maximum allocation")).onFirst().performTextReplacement("4")
+        compose.onAllNodes(hasText("Current allocation")).onFirst().performTextReplacement("1")
+        click("Manually set CPU topology")
+        compose.onAllNodes(hasText("Cores")).onFirst().performTextReplacement("2")
+        compose.onAllNodes(hasText("Threads")).onFirst().performTextReplacement("2")
+        click("Apply")
+        waitForText("Boot options")
+        xml = virsh("dumpxml", "--inactive", "hw-vm")
+        assertTrue(xml, xml.contains("current='1'>4</vcpu>") && xml.contains("cores='2' threads='2'"))
+
+        // Boot options: CD-ROM first, boot menu on
+        click("Boot options")
+        waitForText("Boot device order")
+        click("Enable boot menu")
+        click("Apply")
+        waitForText("Boot options")
+        assertTrue(virsh("dumpxml", "--inactive", "hw-vm").contains("<bootmenu enable='yes'/>"))
+
+        // Add Hardware: a sound card and a new 1 GiB disk
+        clickButton("Add Hardware")
+        waitForText("VirtIO VSOCK")
+        shot("10-add-hardware")
+        click("Sound")
+        click("ac97")
+        click("Finish")
+        waitForText("Sound ac97")
+        clickButton("Add Hardware")
+        click("Storage")
+        compose.onAllNodes(hasText("Size (GiB)")).onFirst().performTextReplacement("1")
+        shot("11-add-storage")
+        click("Finish")
+        waitForText("VirtIO Disk 2")
+        xml = virsh("dumpxml", "--inactive", "hw-vm")
+        assertTrue(xml, xml.contains("model='ac97'") && xml.contains("hw-vm-1.qcow2"))
+
+        // Remove the sound card again, via its page
+        click("Sound ac97")
+        waitForText("Model")
+        compose.onNodeWithContentDescription("Remove").performClick()
+        click("Remove")
+        waitForText("Boot options")
+        assertFalse(virsh("dumpxml", "--inactive", "hw-vm").contains("model='ac97'"))
+
+        // Per-device XML tab
+        click("RNG /dev/urandom")
+        click("XML")
+        val rngXml = compose.onAllNodes(hasText("<rng", substring = true)).onFirst()
+        rngXml.performTextReplacement("<rng model='virtio'><backend model='random'>/dev/random</backend></rng>")
+        click("Apply")
+        waitForText("RNG /dev/random")
+
+        // Cancel installation deletes the VM and its disks, but not the ISO.
+        click("Cancel installation")
+        waitForText("Install media (ISO files) are kept")
+        clickButton("Cancel installation") // the dialog's confirm button
+        compose.waitUntil(60_000) { idle(); virsh("list", "--all", "--name").lines().none { it == "hw-vm" } }
+        val vols = virsh("vol-list", "default")
+        assertFalse(vols, vols.contains("hw-vm.qcow2") || vols.contains("hw-vm-1.qcow2"))
+        assertTrue(vols.contains("debian-13-netinst.iso"))
     }
 }
