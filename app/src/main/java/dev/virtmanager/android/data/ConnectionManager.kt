@@ -122,6 +122,8 @@ class ConnectionManager(private val repository: ConnectionRepository) {
                 msg.contains("UnknownHostException", true) || t is java.net.UnknownHostException -> "Unknown host"
                 msg.contains("timeout", true) -> "Connection timed out"
                 msg.contains("Connection refused", true) -> "Connection refused"
+                msg.contains("EHOSTUNREACH", true) || msg.contains("No route to host", true) ->
+                    "The host can't be reached (no route to host): it is down, hanging, rebooting or not on this network"
                 msg.contains("reject HostKey", true) || msg.contains("HostKey has been changed", true) -> "Host key rejected"
                 else -> msg
             }

@@ -117,6 +117,8 @@ data class DomainDefinition(
     val hasGuestAgentChannel: Boolean,
     /** Created with "Customize configuration before install" and never started since. */
     val setupPending: Boolean = false,
+    /** Addresses of passed-through PCI devices (VFIO), e.g. a GPU. */
+    val pciHostdevs: List<String> = emptyList(),
 ) {
     val vnc: GraphicsDevice? get() = graphics.firstOrNull { it.type == "vnc" }
 }

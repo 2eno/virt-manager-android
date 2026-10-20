@@ -364,6 +364,12 @@ object Parsers {
                     e.tagName.endsWith(":setup") && (0 until e.attributes.length).any { i -> e.attributes.item(i).nodeValue == SetupMarker.NS }
                 }
             } == true,
+            pciHostdevs = devices?.children("hostdev").orEmpty().filter { it.attr("type") == "pci" }.mapNotNull { h ->
+                h.child("source")?.child("address")?.let { a ->
+                    fun hex(n: String) = a.attr(n)?.removePrefix("0x")?.toIntOrNull(16) ?: 0
+                    "%04x:%02x:%02x.%x".format(hex("domain"), hex("bus"), hex("slot"), hex("function"))
+                }
+            },
         )
     }
 

@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import dev.virtmanager.android.libvirt.DomainXmlBuilder
 import dev.virtmanager.android.ui.components.ConfirmDialog
 import dev.virtmanager.android.ui.components.DeleteVmDialog
+import dev.virtmanager.android.ui.components.DomainAction
 import dev.virtmanager.android.ui.hw.Note
 import dev.virtmanager.android.ui.components.Format
 import dev.virtmanager.android.ui.components.InfoRow
@@ -164,14 +165,32 @@ fun VmSnapshotsTab(state: VmUiState, vm: VmDetailViewModel) {
         )
     }
     reverting?.let { s ->
-        ConfirmDialog(
-            title = "Revert to \"$s\"?",
-            message = "The VM's current state will be discarded and replaced by the snapshot.",
-            confirmLabel = "Revert",
-            destructive = true,
-            onConfirm = { vm.revertSnapshot(s); reverting = null },
-            onDismiss = { reverting = null },
-        )
+        val running = (state.stats?.state ?: state.info?.state)?.isActive == true
+        val passthrough = state.definition?.pciHostdevs.orEmpty()
+        val diskOnly = state.snapshots?.firstOrNull { it.name == s }?.state == "disk-snapshot"
+        if (running && passthrough.isNotEmpty()) {
+            // Reverting a running VM stops its QEMU at once, which makes the host reset the
+            // passed-through devices; AMD GPUs often fail that and can hang the whole host.
+            ConfirmDialog(
+                title = "Shut down \"${state.name}\" first",
+                message = "The VM has passed-through PCI devices (${passthrough.joinToString()}). Reverting it while it runs " +
+                    "forces it off, and resetting the devices that way can hang the host (common with AMD GPUs). " +
+                    "Shut the guest down, then revert.",
+                confirmLabel = "Shut down",
+                onConfirm = { vm.action("Shut down", DomainAction.SHUTDOWN.run); reverting = null },
+                onDismiss = { reverting = null },
+            )
+        } else {
+            ConfirmDialog(
+                title = "Revert to \"$s\"?",
+                message = "The VM's current state will be discarded and replaced by the snapshot." +
+                    if (running && diskOnly) " This snapshot has no memory, so the VM is forced off first, like pulling the power cord." else "",
+                confirmLabel = "Revert",
+                destructive = true,
+                onConfirm = { vm.revertSnapshot(s); reverting = null },
+                onDismiss = { reverting = null },
+            )
+        }
     }
     deleting?.let { s ->
         ConfirmDialog(

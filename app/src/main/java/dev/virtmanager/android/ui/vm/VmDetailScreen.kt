@@ -261,7 +261,10 @@ fun VmDetailScreen(
     pending?.let { a ->
         ConfirmDialog(
             title = "${a.label} \"${state.name}\"?",
-            message = a.confirm.orEmpty(),
+            message = a.confirm.orEmpty() + if (a == DomainAction.FORCE_OFF && state.definition?.pciHostdevs.orEmpty().isNotEmpty()) {
+                " This VM has passed-through PCI devices; forcing it off makes the host reset them, which can hang the " +
+                    "host with some devices (AMD GPUs especially). Prefer Shut down."
+            } else "",
             confirmLabel = a.label,
             destructive = a == DomainAction.FORCE_OFF || a == DomainAction.RESET,
             onConfirm = { vm.action(a.label, a.run); pending = null },
