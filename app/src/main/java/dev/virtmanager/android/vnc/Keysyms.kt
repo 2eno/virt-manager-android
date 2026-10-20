@@ -34,6 +34,24 @@ object Keysyms {
         else -> 0x01000000 or c.code
     }
 
+    /** Printable ASCII that a US keyboard types with Shift (letters aside). */
+    private const val SHIFTED = "~!@#\$%^&*()_+{}|:\"<>?"
+
+    /**
+     * Whether [keysym] needs Shift held to come out right. QEMU's VNC server maps a keysym to
+     * a key on a US keyboard but drops the Shift that key needs (it only fakes Caps Lock for
+     * letters), so "!" arrives as "1" unless the client presses Shift itself, as a real
+     * keyboard would.
+     */
+    fun needsShift(keysym: Int): Boolean =
+        keysym in 'A'.code..'Z'.code || (keysym in 0x20..0x7e && keysym.toChar() in SHIFTED)
+
+    /** The key presses for [keysym] with the [modifiers] held: adds Shift where [needsShift]. */
+    fun combo(modifiers: List<Int>, keysym: Int): IntArray {
+        val shift = needsShift(keysym) && SHIFT_L !in modifiers
+        return (modifiers + listOfNotNull(SHIFT_L.takeIf { shift }) + keysym).toIntArray()
+    }
+
     fun forAndroidKey(keyCode: Int): Int? = when (keyCode) {
         KeyEvent.KEYCODE_DEL -> BACKSPACE
         KeyEvent.KEYCODE_FORWARD_DEL -> DELETE

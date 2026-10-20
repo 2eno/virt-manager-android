@@ -39,4 +39,17 @@ class ExtraKeysTest {
         assertTrue(ExtraKeys.rows.flatten().filter { it.label in setOf("↑", "↓", "←", "→") }.all { it.repeats })
         assertEquals((1..12).map { "F$it" }, ExtraKeys.fnRow.map { it.label }.filter { it.startsWith("F") })
     }
+
+    @Test fun shiftedCharactersHoldShift() {
+        val shift = Keysyms.SHIFT_L
+        assertEquals(listOf(shift, '!'.code), Keysyms.combo(emptyList(), '!'.code).toList())
+        assertEquals(listOf(shift, 'A'.code), Keysyms.combo(emptyList(), 'A'.code).toList())
+        assertEquals(listOf('1'.code), Keysyms.combo(emptyList(), '1'.code).toList())
+        assertEquals(listOf(Keysyms.ESCAPE), Keysyms.combo(emptyList(), Keysyms.ESCAPE).toList())
+        // Ctrl+Shift+... keeps one Shift, after the sticky modifiers.
+        assertEquals(listOf(Keysyms.CONTROL_L, shift, '|'.code), Keysyms.combo(listOf(Keysyms.CONTROL_L), '|'.code).toList())
+        assertEquals(listOf(shift, '~'.code), Keysyms.combo(listOf(shift), '~'.code).toList())
+        assertTrue("~!@#$%^&*()_+{}|:\"<>?".all { Keysyms.needsShift(it.code) })
+        assertTrue("`1234567890-=[]\\;',./ az".none { Keysyms.needsShift(it.code) })
+    }
 }

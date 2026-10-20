@@ -105,6 +105,7 @@ fun VncScreen(connectionId: String, vmName: String, onBack: () -> Unit) {
     var keyboard by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     val modifiers = remember { StickyModifiers() }
+    var shiftHeld by remember { mutableStateOf(false) }
     var imeValue by remember { mutableStateOf(TextFieldValue(SENTINEL, TextRange(SENTINEL.length))) }
     val focus = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -149,12 +150,14 @@ fun VncScreen(connectionId: String, vmName: String, onBack: () -> Unit) {
     // Typed text and extra keys both take the sticky modifiers (Ctrl+C from the soft keyboard).
     fun sendText(text: String) {
         val c = client ?: return
-        for (ch in text) c.sendCombo(*(modifiers.consume() + Keysyms.forChar(ch)).toIntArray())
+        // A hardware Shift that is held already counts; don't press it a second time.
+        val held = listOfNotNull(Keysyms.SHIFT_L.takeIf { shiftHeld })
+        for (ch in text) c.sendCombo(*Keysyms.combo(modifiers.consume() + held, Keysyms.forChar(ch)))
     }
 
     fun sendSpecial(keysym: Int) {
         val c = client ?: return
-        c.sendCombo(*(modifiers.consume() + keysym).toIntArray())
+        c.sendCombo(*Keysyms.combo(modifiers.consume(), keysym))
     }
 
     Column(
@@ -270,6 +273,7 @@ fun VncScreen(connectionId: String, vmName: String, onBack: () -> Unit) {
                     .focusRequester(focus)
                     .onPreviewKeyEvent { e ->
                         val sym = Keysyms.forAndroidKey(e.key.nativeKeyCode) ?: return@onPreviewKeyEvent false
+                        if (sym == Keysyms.SHIFT_L) shiftHeld = e.type == KeyEventType.KeyDown
                         client?.sendKey(sym, e.type == KeyEventType.KeyDown)
                         true
                     },
