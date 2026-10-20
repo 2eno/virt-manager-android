@@ -1,7 +1,6 @@
 package dev.virtmanager.android.ui.console
 
 import android.app.Activity
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
@@ -10,8 +9,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,12 +16,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -40,15 +40,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -93,6 +90,7 @@ import kotlin.math.min
 
 private const val SENTINEL = "  "
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun VncScreen(connectionId: String, vmName: String, onBack: () -> Unit) {
     val app = app()
@@ -106,12 +104,11 @@ fun VncScreen(connectionId: String, vmName: String, onBack: () -> Unit) {
     var toolbar by remember { mutableStateOf(true) }
     var keyboard by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
-    var ctrl by remember { mutableStateOf(false) }
-    var alt by remember { mutableStateOf(false) }
-    var superKey by remember { mutableStateOf(false) }
+    val modifiers = remember { StickyModifiers() }
     var imeValue by remember { mutableStateOf(TextFieldValue(SENTINEL, TextRange(SENTINEL.length))) }
     val focus = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val imeVisible = WindowInsets.isImeVisible
 
     // Immersive mode while the console is open.
     val activity = LocalContext.current as? Activity
@@ -149,259 +146,226 @@ fun VncScreen(connectionId: String, vmName: String, onBack: () -> Unit) {
         return Offset(p.x.coerceIn(-maxX, maxX), p.y.coerceIn(-maxY, maxY))
     }
 
+    // Typed text and extra keys both take the sticky modifiers (Ctrl+C from the soft keyboard).
     fun sendText(text: String) {
         val c = client ?: return
-        val mods = buildList {
-            if (ctrl) add(Keysyms.CONTROL_L)
-            if (alt) add(Keysyms.ALT_L)
-            if (superKey) add(Keysyms.SUPER_L)
-        }
-        for (ch in text) {
-            mods.forEach { c.sendKey(it, true) }
-            c.tapKey(Keysyms.forChar(ch))
-            mods.reversed().forEach { c.sendKey(it, false) }
-        }
-        if (mods.isNotEmpty()) { ctrl = false; alt = false; superKey = false }
+        for (ch in text) c.sendCombo(*(modifiers.consume() + Keysyms.forChar(ch)).toIntArray())
     }
 
     fun sendSpecial(keysym: Int) {
         val c = client ?: return
-        val mods = buildList {
-            if (ctrl) add(Keysyms.CONTROL_L)
-            if (alt) add(Keysyms.ALT_L)
-            if (superKey) add(Keysyms.SUPER_L)
-        }
-        c.sendCombo(*(mods + keysym).toIntArray())
-        if (mods.isNotEmpty()) { ctrl = false; alt = false; superKey = false }
+        c.sendCombo(*(modifiers.consume() + keysym).toIntArray())
     }
 
-    Box(
+    Column(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
             .imePadding(),
     ) {
-        Canvas(
-            Modifier
-                .fillMaxSize()
-                .onSizeChanged { viewSize = it }
-                .pointerInput(client, state.width, state.height) {
-                    val c = client ?: return@pointerInput
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val start = down.position
-                        var last = start
-                        var multi = false
-                        var dragging = false
-                        var longPressed = false
-                        var scrollAccum = 0f
-                        val (sx, sy) = toFb(start)
-                        c.sendPointer(sx, sy, 0)
-                        while (true) {
-                            val event = if (!dragging && !multi && !longPressed) {
-                                withTimeoutOrNull(450) { awaitPointerEvent() }
-                            } else awaitPointerEvent()
-                            if (event == null) {
-                                // Held still: long press = right click.
-                                longPressed = true
-                                c.click(sx, sy, RfbClient.BUTTON_RIGHT)
-                                continue
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            Canvas(
+                Modifier
+                    .fillMaxSize()
+                    .onSizeChanged { viewSize = it }
+                    .pointerInput(client, state.width, state.height) {
+                        val c = client ?: return@pointerInput
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val start = down.position
+                            var last = start
+                            var multi = false
+                            var dragging = false
+                            var longPressed = false
+                            var scrollAccum = 0f
+                            val (sx, sy) = toFb(start)
+                            c.sendPointer(sx, sy, 0)
+                            while (true) {
+                                val event = if (!dragging && !multi && !longPressed) {
+                                    withTimeoutOrNull(450) { awaitPointerEvent() }
+                                } else awaitPointerEvent()
+                                if (event == null) {
+                                    // Held still: long press = right click.
+                                    longPressed = true
+                                    c.click(sx, sy, RfbClient.BUTTON_RIGHT)
+                                    continue
+                                }
+                                val pressed = event.changes.filter { it.pressed }
+                                if (pressed.isEmpty()) break
+                                if (pressed.size >= 2) {
+                                    if (dragging) {
+                                        val (lx, ly) = toFb(last)
+                                        c.sendPointer(lx, ly, 0)
+                                        dragging = false
+                                    }
+                                    multi = true
+                                    val z = event.calculateZoom()
+                                    val p = event.calculatePan()
+                                    if (zoom <= 1.01f && abs(z - 1f) < 0.01f) {
+                                        // At fit zoom, two-finger vertical drag scrolls the guest.
+                                        scrollAccum += p.y
+                                        val (cx, cy) = toFb(pressed[0].position)
+                                        while (abs(scrollAccum) > 40f) {
+                                            c.scroll(cx, cy, up = scrollAccum > 0)
+                                            scrollAccum -= 40f * Math.signum(scrollAccum)
+                                        }
+                                    } else {
+                                        zoom = (zoom * z).coerceIn(1f, 6f)
+                                        pan = clampPan(pan + p)
+                                    }
+                                    event.changes.forEach { it.consume() }
+                                } else if (!multi) {
+                                    val ch = pressed[0]
+                                    last = ch.position
+                                    val moved = (ch.position - start).getDistance() > viewConfiguration.touchSlop
+                                    if (moved && !longPressed) {
+                                        val (x, y) = toFb(ch.position)
+                                        if (!dragging) {
+                                            dragging = true
+                                            c.sendPointer(sx, sy, RfbClient.BUTTON_LEFT)
+                                        }
+                                        c.sendPointer(x, y, RfbClient.BUTTON_LEFT)
+                                    }
+                                    ch.consume()
+                                }
                             }
-                            val pressed = event.changes.filter { it.pressed }
-                            if (pressed.isEmpty()) break
-                            if (pressed.size >= 2) {
-                                if (dragging) {
-                                    val (lx, ly) = toFb(last)
-                                    c.sendPointer(lx, ly, 0)
-                                    dragging = false
+                            if (!multi) {
+                                when {
+                                    dragging -> { val (x, y) = toFb(last); c.sendPointer(x, y, 0) }
+                                    !longPressed -> c.click(sx, sy, RfbClient.BUTTON_LEFT)
                                 }
-                                multi = true
-                                val z = event.calculateZoom()
-                                val p = event.calculatePan()
-                                if (zoom <= 1.01f && abs(z - 1f) < 0.01f) {
-                                    // At fit zoom, two-finger vertical drag scrolls the guest.
-                                    scrollAccum += p.y
-                                    val (cx, cy) = toFb(pressed[0].position)
-                                    while (abs(scrollAccum) > 40f) {
-                                        c.scroll(cx, cy, up = scrollAccum > 0)
-                                        scrollAccum -= 40f * Math.signum(scrollAccum)
-                                    }
-                                } else {
-                                    zoom = (zoom * z).coerceIn(1f, 6f)
-                                    pan = clampPan(pan + p)
-                                }
-                                event.changes.forEach { it.consume() }
-                            } else if (!multi) {
-                                val ch = pressed[0]
-                                last = ch.position
-                                val moved = (ch.position - start).getDistance() > viewConfiguration.touchSlop
-                                if (moved && !longPressed) {
-                                    val (x, y) = toFb(ch.position)
-                                    if (!dragging) {
-                                        dragging = true
-                                        c.sendPointer(sx, sy, RfbClient.BUTTON_LEFT)
-                                    }
-                                    c.sendPointer(x, y, RfbClient.BUTTON_LEFT)
-                                }
-                                ch.consume()
                             }
                         }
-                        if (!multi) {
-                            when {
-                                dragging -> { val (x, y) = toFb(last); c.sendPointer(x, y, 0) }
-                                !longPressed -> c.click(sx, sy, RfbClient.BUTTON_LEFT)
-                            }
-                        }
-                    }
-                },
-        ) {
-            val frame = state.frame ?: return@Canvas
-            if (state.frameId < 0) return@Canvas
-            val s = scale()
-            val o = origin()
-            drawImage(
-                image = frame.asImageBitmap(),
-                srcOffset = IntOffset.Zero,
-                srcSize = IntSize(frame.width, frame.height),
-                dstOffset = IntOffset(o.x.toInt(), o.y.toInt()),
-                dstSize = IntSize((frame.width * s).toInt(), (frame.height * s).toInt()),
-                filterQuality = if (s >= 1.5f) FilterQuality.None else FilterQuality.Low,
-            )
-        }
-
-        // Invisible field that receives soft-keyboard input.
-        BasicTextField(
-            value = imeValue,
-            onValueChange = { v ->
-                val text = v.text
-                when {
-                    text.length < SENTINEL.length -> repeat(SENTINEL.length - text.length) { sendSpecial(Keysyms.BACKSPACE) }
-                    text.startsWith(SENTINEL) -> sendText(text.removePrefix(SENTINEL))
-                    else -> sendText(text.trimStart())
-                }
-                imeValue = TextFieldValue(SENTINEL, TextRange(SENTINEL.length))
-            },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-            modifier = Modifier
-                .size(1.dp)
-                .focusRequester(focus)
-                .onPreviewKeyEvent { e ->
-                    val sym = Keysyms.forAndroidKey(e.key.nativeKeyCode) ?: return@onPreviewKeyEvent false
-                    client?.sendKey(sym, e.type == KeyEventType.KeyDown)
-                    true
-                },
-        )
-
-        if (!state.connected) {
-            Column(
-                Modifier.align(Alignment.Center).padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+                    },
             ) {
-                if (state.error == null) CircularProgressIndicator(color = Color.White)
-                Spacer(Modifier.height(16.dp))
-                Text(state.error ?: state.status, color = Color.White, style = MaterialTheme.typography.bodyLarge)
-                if (state.error != null && !state.needsPassword) {
+                val frame = state.frame ?: return@Canvas
+                if (state.frameId < 0) return@Canvas
+                val s = scale()
+                val o = origin()
+                drawImage(
+                    image = frame.asImageBitmap(),
+                    srcOffset = IntOffset.Zero,
+                    srcSize = IntSize(frame.width, frame.height),
+                    dstOffset = IntOffset(o.x.toInt(), o.y.toInt()),
+                    dstSize = IntSize((frame.width * s).toInt(), (frame.height * s).toInt()),
+                    filterQuality = if (s >= 1.5f) FilterQuality.None else FilterQuality.Low,
+                )
+            }
+
+            // Invisible field that receives soft-keyboard input.
+            BasicTextField(
+                value = imeValue,
+                onValueChange = { v ->
+                    val text = v.text
+                    when {
+                        text.length < SENTINEL.length -> repeat(SENTINEL.length - text.length) { sendSpecial(Keysyms.BACKSPACE) }
+                        text.startsWith(SENTINEL) -> sendText(text.removePrefix(SENTINEL))
+                        else -> sendText(text.trimStart())
+                    }
+                    imeValue = TextFieldValue(SENTINEL, TextRange(SENTINEL.length))
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                modifier = Modifier
+                    .size(1.dp)
+                    .focusRequester(focus)
+                    .onPreviewKeyEvent { e ->
+                        val sym = Keysyms.forAndroidKey(e.key.nativeKeyCode) ?: return@onPreviewKeyEvent false
+                        client?.sendKey(sym, e.type == KeyEventType.KeyDown)
+                        true
+                    },
+            )
+
+            if (!state.connected) {
+                Column(
+                    Modifier.align(Alignment.Center).padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (state.error == null) CircularProgressIndicator(color = Color.White)
                     Spacer(Modifier.height(16.dp))
-                    Button(onClick = { vm.reconnect(null) }) { Text("Reconnect") }
+                    Text(state.error ?: state.status, color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                    if (state.error != null && !state.needsPassword) {
+                        Spacer(Modifier.height(16.dp))
+                        Button(onClick = { vm.reconnect(null) }) { Text("Reconnect") }
+                    }
                 }
             }
-        }
 
-        // Top toolbar
-        AnimatedVisibility(toolbar, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter)) {
-            Surface(
-                color = Color(0xCC1B1D22),
-                contentColor = Color.White,
-                shape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.safeDrawingPadding()) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
-                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                        Column(Modifier.weight(1f)) {
-                            Text(vmName, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                if (state.connected) "${state.width}×${state.height}" else state.status,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFFB8BCC6),
-                            )
-                        }
-                        IconButton(onClick = {
-                            keyboard = !keyboard
-                            if (keyboard) { focus.requestFocus(); keyboardController?.show() }
-                            else keyboardController?.hide()
-                        }) { Icon(if (keyboard) Icons.Outlined.KeyboardHide else Icons.Outlined.Keyboard, "Keyboard") }
-                        IconButton(onClick = { zoom = 1f; pan = Offset.Zero }) { Icon(Icons.Outlined.Fullscreen, "Fit to screen") }
-                        Box {
-                            IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "More") }
-                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                DropdownMenuItem(text = { Text("Ctrl+Alt+Delete") }, onClick = {
-                                    menu = false
-                                    client?.sendCombo(Keysyms.CONTROL_L, Keysyms.ALT_L, Keysyms.DELETE)
-                                })
-                                DropdownMenuItem(text = { Text("Ctrl+Alt+Backspace") }, onClick = {
-                                    menu = false
-                                    client?.sendCombo(Keysyms.CONTROL_L, Keysyms.ALT_L, Keysyms.BACKSPACE)
-                                })
-                                HorizontalDivider()
-                                (1..8).forEach { n ->
-                                    DropdownMenuItem(text = { Text("Ctrl+Alt+F$n") }, onClick = {
-                                        menu = false
-                                        client?.sendCombo(Keysyms.CONTROL_L, Keysyms.ALT_L, Keysyms.function(n))
-                                    })
-                                }
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text("Reconnect") },
-                                    leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
-                                    onClick = { menu = false; vm.reconnect(null) },
+            // Top toolbar
+            // Qualified: inside the Column the ColumnScope overload would be picked and refused.
+            androidx.compose.animation.AnimatedVisibility(toolbar, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter)) {
+                Surface(
+                    color = Color(0xCC1B1D22),
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.safeDrawingPadding()) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+                            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                            Column(Modifier.weight(1f)) {
+                                Text(vmName, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    if (state.connected) "${state.width}×${state.height}" else state.status,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFFB8BCC6),
                                 )
                             }
-                        }
-                    }
-                    if (keyboard) {
-                        Row(
-                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            val chipColors = FilterChipDefaults.filterChipColors(
-                                labelColor = Color.White,
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                            )
-                            FilterChip(ctrl, { ctrl = !ctrl }, { Text("Ctrl") }, colors = chipColors)
-                            FilterChip(alt, { alt = !alt }, { Text("Alt") }, colors = chipColors)
-                            FilterChip(superKey, { superKey = !superKey }, { Text("Super") }, colors = chipColors)
-                            listOf(
-                                "Esc" to Keysyms.ESCAPE, "Tab" to Keysyms.TAB, "↑" to Keysyms.UP, "↓" to Keysyms.DOWN,
-                                "←" to Keysyms.LEFT, "→" to Keysyms.RIGHT, "Home" to Keysyms.HOME, "End" to Keysyms.END,
-                                "PgUp" to Keysyms.PAGE_UP, "PgDn" to Keysyms.PAGE_DOWN, "Del" to Keysyms.DELETE,
-                            ).forEach { (label, sym) ->
-                                TextButton(onClick = { sendSpecial(sym) }) { Text(label, color = Color.White) }
-                            }
-                            (1..12).forEach { n ->
-                                TextButton(onClick = { sendSpecial(Keysyms.function(n)) }) { Text("F$n", color = Color.White) }
+                            IconButton(onClick = {
+                                // The bar stays when the soft keyboard is dismissed with Back; then the
+                                // button brings the keyboard back instead of closing the bar.
+                                keyboard = !keyboard || !imeVisible
+                                if (keyboard) { focus.requestFocus(); keyboardController?.show() }
+                                else keyboardController?.hide()
+                            }) { Icon(if (keyboard) Icons.Outlined.KeyboardHide else Icons.Outlined.Keyboard, "Keyboard") }
+                            IconButton(onClick = { zoom = 1f; pan = Offset.Zero }) { Icon(Icons.Outlined.Fullscreen, "Fit to screen") }
+                            Box {
+                                IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "More") }
+                                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                    DropdownMenuItem(text = { Text("Ctrl+Alt+Delete") }, onClick = {
+                                        menu = false
+                                        client?.sendCombo(Keysyms.CONTROL_L, Keysyms.ALT_L, Keysyms.DELETE)
+                                    })
+                                    DropdownMenuItem(text = { Text("Ctrl+Alt+Backspace") }, onClick = {
+                                        menu = false
+                                        client?.sendCombo(Keysyms.CONTROL_L, Keysyms.ALT_L, Keysyms.BACKSPACE)
+                                    })
+                                    HorizontalDivider()
+                                    (1..8).forEach { n ->
+                                        DropdownMenuItem(text = { Text("Ctrl+Alt+F$n") }, onClick = {
+                                            menu = false
+                                            client?.sendCombo(Keysyms.CONTROL_L, Keysyms.ALT_L, Keysyms.function(n))
+                                        })
+                                    }
+                                    HorizontalDivider()
+                                    DropdownMenuItem(
+                                        text = { Text("Reconnect") },
+                                        leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
+                                        onClick = { menu = false; vm.reconnect(null) },
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Small handle to bring the toolbar back.
-        Surface(
-            onClick = { toolbar = !toolbar },
-            color = Color(0x991B1D22),
-            contentColor = Color.White,
-            shape = RoundedCornerShape(50),
-            modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(16.dp),
-        ) {
-            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.TouchApp, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(if (toolbar) "Hide controls" else "Controls", style = MaterialTheme.typography.labelLarge)
+            // Small handle to bring the toolbar back.
+            Surface(
+                onClick = { toolbar = !toolbar },
+                color = Color(0x991B1D22),
+                contentColor = Color.White,
+                shape = RoundedCornerShape(50),
+                modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(16.dp),
+            ) {
+                Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.TouchApp, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (toolbar) "Hide controls" else "Controls", style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
+        // Termux-style special keys, docked above the soft keyboard.
+        if (keyboard) ExtraKeysBar(modifiers, onKey = ::sendSpecial, modifier = Modifier.navigationBarsPadding())
     }
 
     if (state.needsPassword) {

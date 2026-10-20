@@ -124,12 +124,16 @@ class RfbClientTest {
         assertEquals(0xFFFF0000.toInt(), fb[1 * w + 3])
         assertEquals(0xFF000000.toInt(), fb[1])
 
+        // Input is called from the UI thread on Android, where writing to the network crashes.
+        val writers = java.util.Collections.synchronizedSet(mutableSetOf<Thread>())
+        client.beforeWrite = { writers += Thread.currentThread() }
         client.sendPointer(100, 1, RfbClient.BUTTON_LEFT) // x is clamped to width-1
         client.sendKey(Keysyms.RETURN, true)
         assertTrue(serverDone.await(5, TimeUnit.SECONDS))
         serverError[0]?.let { throw AssertionError("fake VNC server failed", it) }
         assertArrayEquals(intArrayOf(1, 3, 1), clientEvents[0])
         assertArrayEquals(intArrayOf(1, Keysyms.RETURN), clientEvents[1])
+        assertTrue(writers.isNotEmpty() && Thread.currentThread() !in writers)
         client.close()
         assertTrue(disconnected.await(5, TimeUnit.SECONDS))
         assertNull(errorHolder[0])

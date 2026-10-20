@@ -268,6 +268,16 @@ class RealHostWizardTest {
         waitForText("720×400", 60_000) // QEMU's display, through the SSH tunnel
         repeat(10) { Thread.sleep(300); idle() }
         shot("4-console-after-begin")
+
+        // Termux-style extra keys: they reach QEMU without the app crashing (input used to be
+        // written on the UI thread), and FN shows the function keys.
+        compose.onNodeWithContentDescription("Keyboard").performClick()
+        waitForText("PGDN")
+        click("CTRL"); click("ESC"); click("↓"); click("FN")
+        waitForText("F12")
+        repeat(5) { Thread.sleep(200); idle() }
+        shot("17-extra-keys")
+        assertEquals("running", virsh("domstate", "custom-vm").trim())
         assertEquals("running", virsh("domstate", "custom-vm").trim())
         assertTrue(virsh("net-list", "--name").lines().contains("default"))
     }

@@ -106,8 +106,11 @@ argument is shell-quoted.
   topology. **Networks** – start/stop, autostart, mode, bridge, DHCP range. **Storage** –
   pool usage, start/stop/refresh, browse and delete volumes.
 - **Consoles** – immersive VNC viewer with pinch-zoom/pan, tap = click, long-press = right
-  click, drag = drag, two-finger scroll, soft keyboard with sticky Ctrl/Alt/Super, special
-  keys, F1–F12 and Ctrl+Alt+Del/F-keys; plus a serial terminal with quick keys.
+  click, drag = drag, two-finger scroll, and a Termux-style extra-keys bar above the soft
+  keyboard (ESC / - HOME ↑ END PGUP FN, TAB CTRL ALT ← ↓ → PGDN DEL; FN adds SUPER, SHIFT,
+  INS and F1–F12). Modifiers apply to the next key, typed ones included, or stay on with a long
+  press; arrows repeat while held; swipe up on / and - for \ and |. Ctrl+Alt+Del and
+  Ctrl+Alt+F1–F8 are in the menu. Plus a serial terminal with quick keys.
 - **Modern UI** – Material 3, dynamic color (Android 12+) with a matching fallback palette,
   light/dark/system theme, edge-to-edge, animated navigation.
 

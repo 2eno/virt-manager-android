@@ -3,11 +3,14 @@ package dev.virtmanager.android.vnc
 import android.annotation.SuppressLint
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 
@@ -47,6 +50,16 @@ class RfbClient(
     private val writeLock = Any()
     private var buttonMask = 0
 
+    /**
+     * Input (keys, pointer, clipboard) is written by this thread, never by the caller: callers
+     * are the UI thread, where Android forbids network I/O (NetworkOnMainThreadException).
+     * One thread keeps the messages in order.
+     */
+    private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "rfb-writer").apply { isDaemon = true } }
+
+    /** Test hook: runs on the writer thread before each queued message is written. */
+    internal var beforeWrite: (() -> Unit)? = null
+
     /** Blocks for the lifetime of the connection; run on a background thread. */
     fun run() {
         var error: Throwable? = null
@@ -64,6 +77,7 @@ class RfbClient(
             error = t
         } finally {
             running = false
+            writer.shutdown()
             runCatching { socket?.close() }
             listener.onDisconnected(if (closedByUser) null else error)
         }
@@ -72,6 +86,7 @@ class RfbClient(
     fun close() {
         closedByUser = true
         running = false
+        writer.shutdown()
         runCatching { socket?.close() }
     }
 
@@ -320,15 +335,24 @@ class RfbClient(
 
     // Not inline: the stand-alone copy of an inline function holding a monitor contains Kotlin's
     // inliner markers outside the catch-all, and ART's verifier then rejects the whole class.
+    /** Encodes a message on the caller's thread and queues it for [writer]. */
     private fun send(block: DataOutputStream.() -> Unit) {
         if (!running) return
+        val bytes = ByteArrayOutputStream(32).also { DataOutputStream(it).block() }.toByteArray()
         try {
-            synchronized(writeLock) {
-                output.block()
-                output.flush()
+            writer.execute {
+                beforeWrite?.invoke()
+                try {
+                    synchronized(writeLock) {
+                        output.write(bytes)
+                        output.flush()
+                    }
+                } catch (_: IOException) {
+                    // The read loop will notice the broken connection and report it.
+                }
             }
-        } catch (_: IOException) {
-            // The read loop will notice the broken connection and report it.
+        } catch (_: RejectedExecutionException) {
+            // Closed meanwhile.
         }
     }
 
