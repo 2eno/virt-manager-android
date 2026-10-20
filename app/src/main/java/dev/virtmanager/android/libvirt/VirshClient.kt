@@ -3,7 +3,6 @@ package dev.virtmanager.android.libvirt
 import dev.virtmanager.android.libvirt.config.DomainCapabilities
 import dev.virtmanager.android.libvirt.config.DomainConfig
 import dev.virtmanager.android.libvirt.config.HostDevice
-import dev.virtmanager.android.libvirt.config.HostdevSettings
 import dev.virtmanager.android.libvirt.config.HostInventory
 import dev.virtmanager.android.libvirt.config.OsVariant
 
@@ -394,22 +393,35 @@ class VirshClient(
      * Host USB or PCI devices that can be passed through, in address order. Every device libvirt
      * reports is returned (virt-manager shows them all too); [HostDevice.isBridge] marks the ones
      * that make no sense to assign.
+     *
+     * PCI devices are also read from sysfs: libvirt silently leaves out any PCI device whose
+     * config space it fails to read (typically a GPU that stopped answering after a failed reset),
+     * and such devices are exactly the ones people look for. They come with
+     * [HostDevice.inLibvirt] false.
      */
     suspend fun hostDevices(type: String): List<HostDevice> {
         val cap = if (type == "usb") "usb_device" else "pci"
-        val names = virsh("nodedev-list", "--cap", cap).lines().map { it.trim() }.filter { it.isNotEmpty() }
-        if (names.isEmpty()) return emptyList()
-        val xmls = script(names.map { listOf("nodedev-dumpxml", it) })
-        val devices = names.zip(xmls).map { (name, xml) ->
-            xml?.let(HostInventory::parseNodedev)
-                // Never drop a device just because its details couldn't be read.
-                ?: HostDevice(type, name, name, null, null, null, "details unavailable", settings = HostdevSettings(type))
-        }.filterNot { it.type == "usb" && it.vendorId == "0x1d6b" } // root hubs can't be passed through
+        val listed = runCatching { virsh("nodedev-list", "--cap", cap).lines().map { it.trim() }.filter { it.isNotEmpty() } }
+        val names = listed.getOrDefault(emptyList())
+        val xmls = if (names.isEmpty()) emptyList() else script(names.map { listOf("nodedev-dumpxml", it) })
+        val fromLibvirt = names.zip(xmls).map { (name, xml) ->
+            // Never drop a device just because its details couldn't be read.
+            xml?.let(HostInventory::parseNodedev) ?: HostInventory.placeholder(type, name)
+        }
+        val merged = if (type == "pci") HostInventory.mergePci(fromLibvirt, sysfsPciDevices()) else fromLibvirt
+        // Nothing from either source: report why libvirt couldn't list devices.
+        if (merged.isEmpty()) listed.getOrThrow()
+        val devices = merged.filterNot { it.type == "usb" && it.vendorId == "0x1d6b" } // root hubs can't be passed through
         // Identical USB devices can only be told apart by bus/device address.
         val dupes = devices.filter { it.type == "usb" }.groupBy { "${it.vendorId}:${it.productId}" }.filter { it.value.size > 1 }.keys
         return devices.map { d ->
             if (d.type == "usb" && "${d.vendorId}:${d.productId}" in dupes) d.copy(settings = d.settings.copy(pinUsbAddress = true)) else d
         }.sortedBy { it.address }
+    }
+
+    private suspend fun sysfsPciDevices(): List<HostDevice> {
+        val r = runner.run(HostInventory.SYSFS_PCI_SCRIPT, null)
+        return if (r.ok) HostInventory.parseSysfsPci(r.stdout) else emptyList()
     }
 
     /** OS variants from the host's libosinfo, or a built-in list if it isn't installed. */

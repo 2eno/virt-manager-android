@@ -344,6 +344,16 @@ private fun HostDeviceForm(s: HostdevSettings, onChange: (DeviceSettings) -> Uni
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 4.dp),
             )
+            val unlisted = list.count { !it.inLibvirt }
+            if (unlisted > 0) {
+                Note(
+                    (if (unlisted == 1) "1 device is" else "$unlisted devices are") + " missing from libvirt's own device " +
+                        "list and shown from the host's sysfs. libvirt skips devices whose configuration it can't read, " +
+                        "typically a GPU that stopped answering after a failed reset. They can still be assigned; " +
+                        "libvirt checks them when the VM starts. Restarting libvirt (virtnodedevd or libvirtd) makes " +
+                        "it read them again.",
+                )
+            }
             shown.forEach { d ->
                 val already = attached.any { it.matches(d) }
                 val selected = !already && s.matches(d)
@@ -355,14 +365,14 @@ private fun HostDeviceForm(s: HostdevSettings, onChange: (DeviceSettings) -> Uni
                 ) {
                     RadioButton(selected = selected, onClick = null, enabled = !already)
                     Spacer(Modifier.width(12.dp))
-                    HostDeviceText(d, dim = already || d.isBridge, extra = when {
-                        already -> "Already attached to this VM"
-                        d.isBridge -> "Bridge — usually not useful to assign"
-                        else -> null
-                    })
+                    HostDeviceText(d, dim = already || d.isBridge, extra = listOfNotNull(
+                        "Already attached to this VM".takeIf { already },
+                        "Bridge — usually not useful to assign".takeIf { d.isBridge },
+                    ))
                 }
             }
             val chosen = list.firstOrNull { s.matches(it) && !attached.any { a -> a.matches(it) } }
+            if (chosen != null && !chosen.responding) NotRespondingNote()
             if (chosen != null && chosen.groupMembers.isNotEmpty()) {
                 Note(
                     "IOMMU group ${chosen.iommuGroup} also contains ${chosen.groupMembers.joinToString()}. " +
@@ -375,9 +385,17 @@ private fun HostDeviceForm(s: HostdevSettings, onChange: (DeviceSettings) -> Uni
     }
 }
 
+@Composable
+private fun NotRespondingNote() = Note(
+    "This device doesn't respond (its configuration reads as all ones). AMD GPUs often end up like this after " +
+        "a VM used them (the \"reset bug\"): a VM can't start with it until the host is rebooted or the card is " +
+        "reset, e.g. with the vendor-reset kernel module.",
+    warning = true,
+)
+
 /** Two lines like lspci: what the device is, then address, driver and IOMMU group. */
 @Composable
-private fun HostDeviceText(d: HostDevice, dim: Boolean = false, extra: String? = null) {
+private fun HostDeviceText(d: HostDevice, dim: Boolean = false, extra: List<String> = emptyList()) {
     // Without the host's ID database there is no product name; the class says what it is then.
     val title = listOfNotNull(d.vendorName, d.productName ?: d.className).joinToString(" ").ifBlank { d.name }
     val ids = if (d.vendorId != null && d.productId != null) "${d.vendorId.removePrefix("0x")}:${d.productId.removePrefix("0x")}" else null
@@ -392,7 +410,11 @@ private fun HostDeviceText(d: HostDevice, dim: Boolean = false, extra: String? =
     Column {
         Text(title, style = MaterialTheme.typography.bodyLarge, color = color)
         Text(details, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (extra != null) Text(extra, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+        val problems = listOfNotNull(
+            "Not in libvirt's device list".takeIf { !d.inLibvirt },
+            "Not responding".takeIf { !d.responding },
+        )
+        (extra + problems).forEach { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary) }
     }
 }
 
@@ -411,6 +433,7 @@ private fun AttachedHostDevice(s: HostdevSettings, state: ConfigState, vm: Confi
         host != null -> {
             Spacer(Modifier.height(4.dp))
             HostDeviceText(host)
+            if (!host.responding) NotRespondingNote()
             if (host.groupMembers.isNotEmpty()) {
                 Note("IOMMU group ${host.iommuGroup} also contains ${host.groupMembers.joinToString()}.")
             }

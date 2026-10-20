@@ -81,8 +81,10 @@ argument is shell-quoted.
     filesystem (virtiofs/9p), panic notifier, VSOCK, smartcard, host devices
   - **Add Hardware** with every type virt-manager offers: storage (new image or existing),
     controller, network, input, graphics, sound, serial, parallel, console, channel, USB and
-    PCI host devices (every device the host reports, lspci-style with class, IDs, driver and
-    IOMMU group, searchable, with bridges and already-attached devices marked), video, watchdog, filesystem, smartcard, USB
+    PCI host devices (every device the host has, lspci-style with class, IDs, driver and
+    IOMMU group, searchable, with bridges and already-attached devices marked; devices that
+    libvirt's own list leaves out, such as a GPU that stopped answering after a failed reset,
+    are found in sysfs and flagged), video, watchdog, filesystem, smartcard, USB
     redirection, TPM, RNG, panic notifier, VirtIO VSOCK
   - option lists come from the host's `domcapabilities`, so only what the hypervisor supports
     is offered; SPICE-only features are only offered with a SPICE display

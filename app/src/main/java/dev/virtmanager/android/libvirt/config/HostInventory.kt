@@ -15,6 +15,13 @@ data class HostDevice(
     /** Other PCI functions in the same IOMMU group; they usually have to be passed through too. */
     val groupMembers: List<String> = emptyList(),
     val settings: HostdevSettings,
+    /**
+     * False for a PCI device the host has but libvirt's device list leaves out: libvirt drops
+     * devices whose config space it can't read. It can still be assigned by address.
+     */
+    val inLibvirt: Boolean = true,
+    /** False if the device's config space reads as all ones, i.e. the device doesn't answer. */
+    val responding: Boolean = true,
 ) {
     private val ids: String? get() = if (vendorId != null && productId != null)
         "[${vendorId.removePrefix("0x")}:${productId.removePrefix("0x")}]" else null
@@ -84,6 +91,92 @@ object HostInventory {
     }.getOrNull()
 
     fun pciAddress(domain: Int, bus: Int, slot: Int, function: Int) = "%04x:%02x:%02x.%x".format(domain, bus, slot, function)
+
+    private val nodedevPciName = Regex("^pci_([0-9a-f]{4})_([0-9a-f]{2})_([0-9a-f]{2})_([0-7])$")
+
+    /**
+     * Stands in for a device libvirt lists but couldn't describe (its `nodedev-dumpxml`
+     * failed). For PCI the address is in libvirt's name, so it can still be found and chosen.
+     */
+    fun placeholder(type: String, name: String): HostDevice {
+        val m = nodedevPciName.find(name)
+        val addr = m?.let { "${it.groupValues[1]}:${it.groupValues[2]}:${it.groupValues[3]}.${it.groupValues[4]}" }
+        return HostDevice(
+            type, name, addr ?: name, null, null, null, "details unavailable",
+            settings = if (type == "pci" && addr != null) HostdevSettings("pci", pciAddress = addr) else HostdevSettings(type),
+        )
+    }
+
+    private const val LSPCI_MARKER = "__VMA_LSPCI__"
+
+    /**
+     * Lists the host's PCI devices from sysfs, like lspci does, then the names from lspci if it
+     * is installed. Readable without root; see [parseSysfsPci].
+     */
+    val SYSFS_PCI_SCRIPT = listOf(
+        "for d in /sys/bus/pci/devices/*; do",
+        "  [ -r \"\$d/vendor\" ] || continue",
+        "  drv=; [ -e \"\$d/driver\" ] && drv=\$(basename \"\$(readlink \"\$d/driver\")\")",
+        "  grp=; [ -e \"\$d/iommu_group\" ] && grp=\$(basename \"\$(readlink \"\$d/iommu_group\")\")",
+        // The first 4 bytes are readable without root; all ones means the device doesn't answer.
+        "  cfg=\$(od -An -tx1 -N4 \"\$d/config\" 2>/dev/null | tr -d ' \\n')",
+        "  echo \"\${d##*/} \$(cat \"\$d/vendor\") \$(cat \"\$d/device\") \$(cat \"\$d/class\") \${drv:--} \${grp:--} \${cfg:--}\"",
+        "done",
+        "echo $LSPCI_MARKER",
+        "for l in lspci /usr/sbin/lspci /sbin/lspci; do \"\$l\" -mm -nn -D 2>/dev/null && break; done",
+        "true",
+    ).joinToString("\n")
+
+    /** Parses the output of [SYSFS_PCI_SCRIPT]. */
+    fun parseSysfsPci(out: String): List<HostDevice> {
+        val (devicePart, lspciPart) = out.split(LSPCI_MARKER).let { it[0] to it.getOrElse(1) { "" } }
+        val names = parseLspci(lspciPart)
+        val rows = devicePart.lines().mapNotNull { line ->
+            val f = line.trim().split(Regex("\\s+"))
+            if (f.size < 7 || !f[0].matches(Regex("^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-7]$"))) null else f
+        }
+        val groups = rows.filter { it[5] != "-" }.groupBy({ it[5] }, { it[0] })
+        return rows.map { f ->
+            val addr = f[0]
+            val vendorId = f[1].lowercase()
+            val lspci = names[addr]
+            HostDevice(
+                type = "pci", name = "pci_" + addr.replace(':', '_').replace('.', '_'), address = addr,
+                vendorId = vendorId, productId = f[2].lowercase(),
+                vendorName = lspci?.first ?: knownVendors[vendorId], productName = lspci?.second,
+                className = pciClassName(f[3]),
+                driver = f[4].takeIf { it != "-" },
+                iommuGroup = f[5].toIntOrNull(),
+                groupMembers = groups[f[5]].orEmpty().filter { it != addr },
+                settings = HostdevSettings("pci", pciAddress = addr),
+                responding = f[6] != "ffffffff",
+            )
+        }
+    }
+
+    /** `lspci -mm -nn -D`: address → (vendor, device) names, without lspci's "[1002]" ids. */
+    fun parseLspci(out: String): Map<String, Pair<String?, String?>> = out.lines().mapNotNull { line ->
+        val addr = line.substringBefore(' ').takeIf { it.matches(Regex("^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-7]$")) }
+            ?: return@mapNotNull null
+        val quoted = Regex("\"([^\"]*)\"").findAll(line).map { it.groupValues[1] }.toList()
+        fun clean(s: String?) = s?.replace(Regex("\\s*\\[[0-9a-f]{4}]$"), "")?.trim()
+            ?.takeUnless { it.isEmpty() || it.matches(Regex("^(Device|Vendor) ?[0-9a-f]{0,4}$")) }
+        addr to (clean(quoted.getOrNull(1)) to clean(quoted.getOrNull(2)))
+    }.toMap()
+
+    /**
+     * Libvirt's PCI devices plus the ones only sysfs knows about. A device libvirt lists but
+     * couldn't describe takes its details from sysfs; "not responding" comes from sysfs for all.
+     */
+    fun mergePci(libvirt: List<HostDevice>, sysfs: List<HostDevice>): List<HostDevice> {
+        val bySysfs = sysfs.associateBy { it.address }
+        val listed = libvirt.map { d ->
+            val s = bySysfs[d.address] ?: return@map d
+            if (d.vendorId == null) s.copy(name = d.name) else d.copy(responding = s.responding, driver = d.driver ?: s.driver)
+        }
+        val known = listed.map { it.address }.toSet()
+        return listed + sysfs.filter { it.address !in known }.map { it.copy(inLibvirt = false) }
+    }
 
     /** lspci's names for the common PCI classes (class code like "0x030000"). */
     fun pciClassName(code: String): String? {

@@ -232,6 +232,12 @@ class RealLibvirtConfigTest {
             val listed = virsh.hostDevices(type)
             println("$type: nodedev-list=${expected.size} app=${listed.size} ${listed.map { it.description }}")
             assertEquals("every $type device must be offered", expected.size, listed.size)
+            assertTrue(listed.all { it.inLibvirt && it.responding })
         }
+        // sysfs sees the same PCI devices as libvirt here, so merging adds nothing twice.
+        val sysfs = HostInventory.parseSysfsPci(local.run(HostInventory.SYSFS_PCI_SCRIPT, null).stdout)
+        val pci = virsh.hostDevices("pci")
+        assertEquals(pci.map { it.address }, sysfs.map { it.address }.sorted())
+        assertEquals(pci.map { it.vendorId to it.productId }, sysfs.sortedBy { it.address }.map { it.vendorId to it.productId })
     }
 }
