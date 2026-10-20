@@ -188,6 +188,18 @@ data class Snapshot(
     val creationTime: String,
     val state: String,
     val current: Boolean = false,
+    /** Stored in overlay files (and a memory file) next to the disks instead of inside them. */
+    val external: Boolean = false,
+)
+
+/** The files an external snapshot consists of, from `virsh snapshot-dumpxml`. */
+data class SnapshotFiles(
+    val external: Boolean,
+    val memory: String?,
+    /** Disk target → overlay created by the snapshot. */
+    val overlays: Map<String, String>,
+    /** Disk target → the image the VM used when the snapshot was taken (the overlay's backing). */
+    val base: Map<String, String>,
 )
 
 class VirshException(message: String) : Exception(message)

@@ -223,6 +223,22 @@ object Parsers {
             )
         }
 
+    fun parseSnapshotXml(xml: String): SnapshotFiles {
+        val root = parseXml(xml)
+        val memory = root.child("memory")?.takeIf { it.attr("snapshot") == "external" }?.attr("file")
+        val overlays = root.child("disks")?.children("disk").orEmpty()
+            .filter { it.attr("snapshot") == "external" }
+            .mapNotNull { d -> d.attr("name")?.let { n -> d.child("source")?.let { it.attr("file") ?: it.attr("dev") }?.let { n to it } } }
+            .toMap()
+        val base = root.child("domain")?.child("devices")?.children("disk").orEmpty()
+            .filter { (it.attr("device") ?: "disk") == "disk" }
+            .mapNotNull { d ->
+                val target = d.child("target")?.attr("dev") ?: return@mapNotNull null
+                d.child("source")?.let { it.attr("file") ?: it.attr("dev") }?.let { target to it }
+            }.toMap()
+        return SnapshotFiles(memory != null || overlays.isNotEmpty(), memory, overlays, base)
+    }
+
     // ---------------------------------------------------------------------------------------
     // XML
     // ---------------------------------------------------------------------------------------

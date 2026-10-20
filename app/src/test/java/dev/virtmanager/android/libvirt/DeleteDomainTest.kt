@@ -132,4 +132,23 @@ class DeleteDomainTest {
         val pending = VirshClient(host, "qemu:///system").pendingSetups(listOf("done", "new"))
         assertEquals(setOf("new"), pending)
     }
+
+    @Test fun uefiSnapshotFallsBackToExternal() = runBlocking {
+        val xml = """
+            <domain type='kvm'><name>vm</name><os firmware='efi'><type arch='x86_64'>hvm</type></os><devices>
+              <disk type='file' device='disk'><source file='/pool/vm.qcow2'/><target dev='vda' bus='virtio'/></disk>
+              <disk type='file' device='cdrom'><source file='/iso/d.iso'/><target dev='sda' bus='sata'/><readonly/></disk>
+            </devices></domain>
+        """.trimIndent()
+        val host = FakeHost(
+            "--memspec" to ok(),
+            "snapshot-create-as" to err("Operation not supported: internal snapshots of a VM with pflash based firmware require QCOW2 nvram format"),
+            "dumpxml" to ok(xml),
+            "dominfo" to ok("State: running\n"),
+        )
+        assertTrue(VirshClient(host, "qemu:///system").createSnapshot("vm", "s1", null))
+        val cmd = host.commands.last { "snapshot-create-as" in it }
+        assertTrue(cmd, cmd.contains("--memspec file=/pool/vm-s1.mem,snapshot=external"))
+        assertTrue(cmd, cmd.contains("--diskspec vda,snapshot=external") && cmd.contains("--diskspec sda,snapshot=no"))
+    }
 }

@@ -146,6 +146,7 @@ fun VmSnapshotsTab(state: VmUiState, vm: VmDetailViewModel) {
                 ) {
                     InfoRow("Created", s.creationTime)
                     InfoRow("VM state", s.state)
+                    InfoRow("Type", if (s.external) "External (overlay files next to the disks)" else "Internal")
                     if (s.current) InfoRow("Current", "Yes")
                 }
             }

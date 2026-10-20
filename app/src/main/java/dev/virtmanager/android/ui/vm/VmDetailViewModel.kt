@@ -186,11 +186,12 @@ class VmDetailViewModel(
         }
     }
 
-    private fun snapshotOp(label: String, block: suspend VirshClient.() -> Unit) = viewModelScope.launch {
+    /** Runs a snapshot action; [block] may return a message that replaces [label]. */
+    private fun snapshotOp(label: String, block: suspend VirshClient.() -> String?) = viewModelScope.launch {
         _state.update { it.copy(busy = true) }
         try {
-            virsh().block()
-            _state.update { it.copy(message = label) }
+            val message = virsh().block() ?: label
+            _state.update { it.copy(message = message) }
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t)) }
         } finally {
@@ -200,9 +201,11 @@ class VmDetailViewModel(
         }
     }
 
-    fun createSnapshot(snap: String, description: String?) = snapshotOp("Snapshot \"$snap\" created") { createSnapshot(name, snap, description) }
-    fun revertSnapshot(snap: String) = snapshotOp("Reverted to \"$snap\"") { revertSnapshot(name, snap) }
-    fun deleteSnapshot(snap: String) = snapshotOp("Snapshot \"$snap\" deleted") { deleteSnapshot(name, snap) }
+    fun createSnapshot(snap: String, description: String?) = snapshotOp("Snapshot \"$snap\" created") {
+        if (createSnapshot(name, snap, description)) "Snapshot \"$snap\" created as an external snapshot (UEFI firmware rules out internal ones)" else null
+    }
+    fun revertSnapshot(snap: String) = snapshotOp("Reverted to \"$snap\"") { revertSnapshot(name, snap); null }
+    fun deleteSnapshot(snap: String) = snapshotOp("Snapshot \"$snap\" deleted") { deleteSnapshot(name, snap); null }
 
     /** Starts the VM after customizing, bringing up any inactive virtual networks it uses first. */
     fun beginInstallation() = viewModelScope.launch {

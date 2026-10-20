@@ -237,8 +237,15 @@ class VirshClient(
         undefine(name)
         val deleted = mutableListOf<String>()
         val failed = mutableListOf<Pair<String, String>>()
+        var refreshed = false
         for (path in deletePaths.distinct()) {
-            val r = runner.run(virshCommand(listOf("vol-delete", path)), null)
+            var r = runner.run(virshCommand(listOf("vol-delete", path)), null)
+            // Snapshot overlays and memory files aren't pool volumes until the pool is refreshed.
+            if (!r.ok && !refreshed && fileExists(path)) {
+                refreshed = true
+                runCatching { pools().filter { it.active }.forEach { refreshPool(it.name) } }
+                r = runner.run(virshCommand(listOf("vol-delete", path)), null)
+            }
             when {
                 r.ok -> deleted += path
                 !fileExists(path) -> Unit // already gone
@@ -295,8 +302,17 @@ class VirshClient(
             val path = if (d.type == "volume") volumePath(d.source!!) else d.source!!
             path?.let { Triple(d.target!!, it, setOf(it, d.source)) }
         }
-        val users = diskUsers(name, resolved.flatMap { it.third })
-        return resolved.map { (target, path, names) -> DiskCandidate(target, path, names.flatMap { users[it].orEmpty() }.distinct()) }
+        // External snapshots leave the older images and memory files behind the current disk.
+        val diskTargets = resolved.map { it.first }.toSet()
+        val snapshotNames = runCatching { virsh("snapshot-list", "--name", name).lines().map { it.trim() }.filter { it.isNotEmpty() } }
+            .getOrDefault(emptyList())
+        val extra = snapshotFiles(name, snapshotNames).flatMap { (snap, f) ->
+            (f.overlays + f.base).filterKeys { it in diskTargets }.map { (t, p) -> Triple(t, p, setOf(p)) } +
+                listOfNotNull(f.memory?.let { Triple("memory of $snap", it, setOf(it)) })
+        }
+        val all = (resolved + extra).distinctBy { it.second }
+        val users = diskUsers(name, all.flatMap { it.third })
+        return all.map { (target, path, names) -> DiskCandidate(target, path, names.flatMap { users[it].orEmpty() }.distinct()) }
     }
 
     /** The file path of a volume given as "pool/volume", or null if it can't be found. */
@@ -341,13 +357,57 @@ class VirshClient(
 
     suspend fun snapshots(name: String): List<Snapshot> {
         val current = runCatching { virsh("snapshot-current", "--name", name).trim() }.getOrNull()
-        return Parsers.parseSnapshotList(virshTable("snapshot-list", name), current)
+        val list = Parsers.parseSnapshotList(virshTable("snapshot-list", name), current)
+        val files = snapshotFiles(name, list.map { it.name })
+        return list.map { s -> s.copy(external = files[s.name]?.external == true) }
     }
 
-    suspend fun createSnapshot(name: String, snapshot: String, description: String?) {
-        val args = mutableListOf("snapshot-create-as", name, snapshot)
-        if (!description.isNullOrBlank()) args += listOf("--description", description)
-        virsh(*args.toTypedArray())
+    private suspend fun snapshotFiles(name: String, snapshots: List<String>): Map<String, SnapshotFiles> {
+        if (snapshots.isEmpty()) return emptyMap()
+        val xmls = script(snapshots.map { listOf("snapshot-dumpxml", name, it) })
+        return snapshots.zip(xmls).mapNotNull { (s, xml) -> xml?.let { runCatching { s to Parsers.parseSnapshotXml(it) }.getOrNull() } }.toMap()
+    }
+
+    /**
+     * Takes a snapshot like virt-manager: internal (inside the qcow2 images) where libvirt
+     * allows it, else external. Internal ones are impossible for UEFI VMs whose NVRAM isn't
+     * qcow2, which is libvirt's default; then the disks get overlay files and, for a running VM,
+     * the memory goes to a file next to the first disk. Returns true if it is external.
+     */
+    suspend fun createSnapshot(name: String, snapshot: String, description: String?): Boolean {
+        val base = mutableListOf("snapshot-create-as", name, snapshot)
+        if (!description.isNullOrBlank()) base += listOf("--description", description)
+        try {
+            virsh(*base.toTypedArray())
+            return false
+        } catch (e: VirshException) {
+            if (!isInternalSnapshotUnsupported(e.message)) throw e
+        }
+        virsh(*externalSnapshotArgs(base, Parsers.parseDomainXml(dumpXml(name)), name, snapshot,
+            running = runCatching { domInfo(name).state.isActive }.getOrDefault(false)).toTypedArray())
+        return true
+    }
+
+    // --- Snapshots helpers ---------------------------------------------------------------
+
+    /** Arguments for an external snapshot: file disks get overlays, other devices are skipped. */
+    internal fun externalSnapshotArgs(base: List<String>, def: DomainDefinition, name: String, snapshot: String, running: Boolean): List<String> {
+        val args = base.toMutableList()
+        val disks = def.disks.filter { it.target != null }
+        val withOverlay = disks.filter { it.device == "disk" && !it.readOnly && it.type == "file" && it.source != null }
+        if (running) {
+            val dir = withOverlay.firstOrNull()?.source?.substringBeforeLast('/') ?: "/var/lib/libvirt/qemu/snapshot"
+            args += listOf("--memspec", "file=$dir/$name-$snapshot.mem,snapshot=external")
+        } else {
+            args += "--disk-only"
+        }
+        disks.forEach { d -> args += listOf("--diskspec", "${d.target},snapshot=" + if (d in withOverlay) "external" else "no") }
+        return args
+    }
+
+    private fun isInternalSnapshotUnsupported(message: String?): Boolean {
+        val m = message ?: return false
+        return m.contains("internal snapshot", true) && (m.contains("not supported", true) || m.contains("require", true))
     }
 
     suspend fun revertSnapshot(name: String, snapshot: String) = virsh("snapshot-revert", name, snapshot)
