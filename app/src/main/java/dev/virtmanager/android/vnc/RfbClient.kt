@@ -318,7 +318,9 @@ class RfbClient(
         write(bytes)
     }
 
-    private inline fun send(block: DataOutputStream.() -> Unit) {
+    // Not inline: the stand-alone copy of an inline function holding a monitor contains Kotlin's
+    // inliner markers outside the catch-all, and ART's verifier then rejects the whole class.
+    private fun send(block: DataOutputStream.() -> Unit) {
         if (!running) return
         try {
             synchronized(writeLock) {

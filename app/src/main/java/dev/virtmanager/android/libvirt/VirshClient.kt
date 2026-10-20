@@ -177,6 +177,33 @@ class VirshClient(
         return started
     }
 
+    /**
+     * Folders above the VM's image files that QEMU's user can't pass through, which makes the
+     * start fail with "Permission denied"; null if there are none or it can't be told.
+     */
+    suspend fun qemuAccessProblem(name: String): QemuAccess.Problem? {
+        val def = Parsers.parseDomainXml(dumpXml(name, inactive = true))
+        val paths = def.disks.filter { it.type == "file" }.mapNotNull { it.source }.filter { it.startsWith("/") }.distinct()
+        if (paths.isEmpty()) return null
+        val (uid, gid) = runCatching { QemuAccess.qemuIdentity(virsh("capabilities"), def.domainType) }.getOrNull() ?: return null
+        val r = runner.run(QemuAccess.script(uid, paths), null)
+        return if (r.ok) QemuAccess.parse(r.stdout, uid, gid) else null
+    }
+
+    /**
+     * Lets QEMU's user pass through the folders of [problem] (search permission only, as
+     * virt-manager does). Returns the folders that couldn't be changed, with the reason.
+     */
+    suspend fun grantQemuSearch(problem: QemuAccess.Problem): List<Pair<String, String>> = problem.dirs.mapNotNull { dir ->
+        val cmd = "setfacl -m u:${problem.uid}:x -- ${Shell.quote(dir)}"
+        var r = runner.run(cmd, null)
+        // Folders the SSH user doesn't own need root.
+        if (!r.ok && useSudo) r = runner.run("sudo -n $cmd", null)
+        if (r.ok) null else dir to cleanError(r.stderr.ifBlank { r.stdout }).let {
+            if (it.contains("not found", true)) "setfacl isn't installed on the host (package \"acl\")" else it
+        }
+    }
+
     suspend fun clearSetupMarker(name: String) = virsh("metadata", name, SetupMarker.NS, "--config", "--remove")
 
     /** Which of the (shut off) VMs [names] still have their setup pending; one virsh call. */

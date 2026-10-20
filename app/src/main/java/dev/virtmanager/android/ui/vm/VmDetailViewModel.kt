@@ -11,6 +11,7 @@ import dev.virtmanager.android.libvirt.DomainInfo
 import dev.virtmanager.android.libvirt.DomainStats
 import dev.virtmanager.android.libvirt.Snapshot
 import dev.virtmanager.android.libvirt.Parsers
+import dev.virtmanager.android.libvirt.QemuAccess
 import dev.virtmanager.android.libvirt.VirshClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -46,6 +47,8 @@ data class VmUiState(
     val customizing: Boolean = false,
     /** Set after Begin installation succeeds; the screen opens the console and clears it. */
     val openConsole: Boolean = false,
+    /** A start failed because QEMU can't reach image files; offered to fix with setfacl. */
+    val accessProblem: QemuAccess.Problem? = null,
 )
 
 
@@ -66,6 +69,8 @@ class VmDetailViewModel(
 
     init {
         reloadDefinition()
+        // The wizard's start failed: it may be QEMU being refused the ISO's folder.
+        if (QemuAccess.isPermissionError(notice)) diagnoseAccess()
     }
 
     fun startPolling() {
@@ -121,6 +126,7 @@ class VmDetailViewModel(
             if (reload) reloadDefinition()
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+            if (QemuAccess.isPermissionError(t.message)) diagnoseAccess()
         } finally {
             _state.update { it.copy(busy = false) }
         }
@@ -208,9 +214,36 @@ class VmDetailViewModel(
             reloadDefinition()
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+            if (QemuAccess.isPermissionError(t.message)) diagnoseAccess()
         } finally {
             _state.update { it.copy(busy = false) }
         }
+    }
+
+    private fun diagnoseAccess() = viewModelScope.launch {
+        runCatching { virsh().qemuAccessProblem(name) }.getOrNull()?.let { p -> _state.update { it.copy(accessProblem = p) } }
+    }
+
+    fun dismissAccessProblem() = _state.update { it.copy(accessProblem = null) }
+
+    /** Lets QEMU pass through the folders it was refused, then starts the VM again. */
+    fun fixAccessAndStart() = viewModelScope.launch {
+        val problem = _state.value.accessProblem ?: return@launch
+        _state.update { it.copy(accessProblem = null, busy = true) }
+        val failed = try {
+            virsh().grantQemuSearch(problem)
+        } catch (t: Throwable) {
+            _state.update { it.copy(error = ConnectionManager.friendly(t), busy = false) }
+            return@launch
+        }
+        _state.update { it.copy(busy = false) }
+        if (failed.isNotEmpty()) {
+            val why = failed.joinToString("; ") { (dir, reason) -> "$dir: $reason" }
+            _state.update { it.copy(error = "Couldn't change the permissions ($why). Run this on the host: ${problem.command}") }
+            return@launch
+        }
+        _state.update { it.copy(error = null) }
+        if (_state.value.customizing) beginInstallation() else run("Started") { startWithNetworks(name) }
     }
 
     fun consoleOpened() = _state.update { it.copy(openConsole = false) }

@@ -11,6 +11,7 @@ import dev.virtmanager.android.data.MetricsTracker
 import dev.virtmanager.android.libvirt.DomainStats
 import dev.virtmanager.android.libvirt.NetworkDetails
 import dev.virtmanager.android.libvirt.NodeMemStats
+import dev.virtmanager.android.libvirt.QemuAccess
 import dev.virtmanager.android.libvirt.StoragePool
 import dev.virtmanager.android.libvirt.StorageVolume
 import dev.virtmanager.android.libvirt.VirshClient
@@ -154,7 +155,9 @@ class HostViewModel(private val app: VirtManagerApp, val connectionId: String) :
                 _state.update { it.copy(message = successMessage) }
                 poll()
             } catch (t: Throwable) {
-                _state.update { it.copy(error = "$label failed: ${ConnectionManager.friendly(t)}") }
+                // The VM's page can diagnose and fix folder permissions; point there.
+                val hint = if (QemuAccess.isPermissionError(t.message)) "\nStart it from its page to fix the folder permissions." else ""
+                _state.update { it.copy(error = "$label failed: ${ConnectionManager.friendly(t)}$hint") }
             } finally {
                 _state.update { it.copy(busy = it.busy - name) }
             }

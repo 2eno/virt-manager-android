@@ -96,7 +96,10 @@ argument is shell-quoted.
   setup can be resumed later from the machine list, on any device). Creation can't be
   interrupted half-way. Bridges are discovered on the host and validated before anything is created,
   inactive networks are started with the VM, a failed step rolls back the new disk, leftover
-  images never block a retry, and KVM-less hosts get software-emulated guests. OS-aware
+  images never block a retry, and KVM-less hosts get software-emulated guests. When QEMU
+  can't open an image because its user may not enter a folder above it (e.g. an ISO in a home
+  folder), the VM page says which folders and offers virt-manager's fix: search permission for
+  QEMU's user via `setfacl`, then starts the VM. OS-aware
   defaults: virtio for Linux/BSD, SATA + e1000e + Hyper-V enlightenments for Windows, `virt`
   machine + UEFI on aarch64 hosts.
 - **Host** – host CPU and memory graphs, committed memory, hypervisor/libvirt versions, CPU
@@ -146,7 +149,7 @@ Opt-in integration tests run against real services when these variables are set:
 | `VMA_IT_SSH_PORT`, `VMA_IT_SSH_KEY` (`VMA_IT_SSH_USER`, default `root`) | sshd on 127.0.0.1 with `virsh` installed. `SshIntegrationTest` uses `test:///default` to cover host-key TOFU, polling, XML, stdin, PTY and port forwarding. |
 | `VMA_IT_VNC_PORT`, `VMA_IT_VNC_PW_PORT` + `VMA_IT_VNC_PW` | QEMU VNC displays (e.g. `qemu-system-x86_64 -display none -vnc 127.0.0.1:5`). `QemuVncIntegrationTest` renders the framebuffer and checks VNC password auth through the SSH tunnel. |
 | `VMA_IT_TESTNODE` | Path to a libvirt test-driver node XML on that host; `AppScreenshotTest` runs the app under Robolectric and records `docs/screenshots`. |
-| `VMA_IT_REAL_URI` | A real libvirtd URI on that host (e.g. `qemu:///system`, with a `default` pool holding an ISO). `RealHostWizardTest` drives the New VM wizard through bridge validation, inactive networks, leftover images, a VM that fails to start, customize-before-install, the hardware pages, Add Hardware (including a PCI host device), Remove, the XML editors, leaving and resuming an unfinished setup, and Cancel installation. `RealDeleteTest` (local `virsh`) deletes VMs with shared disks, disks outside active pools, volume disks and a running UEFI VM with TPM. `RealLibvirtConfigTest` (local `virsh`) saves every editor field and all Add Hardware types through libvirt and boots an edited VM. Both create and delete their own VMs. |
+| `VMA_IT_REAL_URI` | A real libvirtd URI on that host (e.g. `qemu:///system`, with a `default` pool holding an ISO). `RealHostWizardTest` drives the New VM wizard through bridge validation, inactive networks, leftover images, a VM that fails to start, customize-before-install, the hardware pages, Add Hardware (including a PCI host device), Remove, the XML editors, leaving and resuming an unfinished setup, and Cancel installation. `RealDeleteTest` (local `virsh`) deletes VMs with shared disks, disks outside active pools, volume disks and a running UEFI VM with TPM. `RealLibvirtConfigTest` (local `virsh`) saves every editor field and all Add Hardware types through libvirt and boots an edited VM. They create and delete their own VMs. With `VMA_IT_HOME_USER` (a user in the libvirt group with a 0700 home folder), `RealQemuAccessTest` reproduces "Permission denied" for an ISO in that home folder and fixes it as that user. |
 
 ## Project layout
 

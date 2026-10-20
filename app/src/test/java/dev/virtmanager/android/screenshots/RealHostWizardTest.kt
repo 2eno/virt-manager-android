@@ -62,7 +62,7 @@ class RealHostWizardTest {
     @Before fun setUp() {
         assumeTrue(port != null && key != null && uri != null)
         FakeAndroidKeyStore.install()
-        listOf("AI-Chat", "AI-Chat2", "AI-Chat3", "custom-vm", "renamed", "hw-vm", "setup-vm").forEach(::cleanup)
+        listOf("AI-Chat", "AI-Chat2", "AI-Chat3", "custom-vm", "renamed", "hw-vm", "setup-vm", "home-iso").forEach(::cleanup)
         // A libvirt network that starts fine but points at a bridge the host doesn't have: guests
         // on it fail with the reported "Cannot get interface MTU on 'br0': No such device".
         virsh("net-destroy", "broken"); virsh("net-undefine", "broken")
@@ -409,5 +409,33 @@ class RealHostWizardTest {
         waitForText("New VM")
         assertFalse(virsh("vol-list", "default").contains("setup-vm.qcow2"))
         assertTrue(virsh("vol-list", "default").contains("debian-13-netinst.iso"))
+    }
+
+    @Test fun isoQemuCantReach() {
+        // An ISO in a folder only its owner may enter, like a home folder.
+        val dir = File("/srv/vma-private").apply { mkdirs() }
+        val iso = File(dir, "debian-13.3.0-amd64-netinst.iso")
+        ProcessBuilder("sh", "-c", "chmod 700 ${dir.path} && setfacl -b ${dir.path} && truncate -s 4M ${iso.path}").start().waitFor()
+        try {
+            connect()
+            click("New VM")
+            waitForText("Operating system")
+            compose.onAllNodes(hasText("Name")).onFirst().performTextInput("home-iso")
+            compose.onAllNodes(hasText("Or enter an ISO path on the host")).onFirst().performTextInput(iso.path)
+            click("Next"); click("Next"); click("Next")
+            waitForText("Network & finish")
+            click("Create")
+            // The start fails like on the reported host; the page explains it and offers the fix.
+            waitForText("QEMU can't open the VM's files")
+            waitForText(dir.path)
+            shot("16-qemu-access")
+            click("Fix and start")
+            compose.waitUntil(90_000) { idle(); virsh("domstate", "home-iso").trim() == "running" }
+            val acl = ProcessBuilder("getfacl", "-n", "-p", "--omit-header", dir.path).start().inputStream.bufferedReader().readText()
+            assertTrue(acl, acl.contains(":--x"))
+        } finally {
+            cleanup("home-iso")
+            dir.deleteRecursively()
+        }
     }
 }

@@ -1,6 +1,10 @@
 package dev.virtmanager.android.ui.vm
 
 import androidx.activity.compose.BackHandler
+import dev.virtmanager.android.ui.theme.MonoStyle
+import dev.virtmanager.android.libvirt.QemuAccess
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
@@ -252,6 +256,8 @@ fun VmDetailScreen(
 
     state.deleteReport?.let { DeleteReportDialog(it, onDismiss = vm::dismissDeleteReport) }
 
+    state.accessProblem?.let { p -> AccessProblemDialog(p, onFix = vm::fixAccessAndStart, onDismiss = vm::dismissAccessProblem) }
+
     pending?.let { a ->
         ConfirmDialog(
             title = "${a.label} \"${state.name}\"?",
@@ -291,4 +297,33 @@ private fun CustomizeBanner(busy: Boolean, onBegin: () -> Unit, onCancel: () -> 
             }
         }
     }
+}
+
+/** virt-manager's "The emulator may not have search permissions for the path" offer. */
+@Composable
+private fun AccessProblemDialog(p: QemuAccess.Problem, onFix: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Lock, null) },
+        title = { Text("QEMU can't open the VM's files") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("QEMU runs as the user \"${p.user}\", which isn't allowed to enter:")
+                Spacer(Modifier.height(8.dp))
+                p.blocked.forEach { (file, dirs) ->
+                    dirs.forEach { Text(it, style = MonoStyle) }
+                    Text("for ${file.substringAfterLast('/')}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(6.dp))
+                }
+                Text(
+                    "Fixing lets that user pass through these folders, like virt-manager does. It can't list or read " +
+                        "anything else in them. Runs on the host:",
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(p.command, style = MonoStyle)
+            }
+        },
+        confirmButton = { Button(onClick = onFix) { Text("Fix and start") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
+    )
 }
