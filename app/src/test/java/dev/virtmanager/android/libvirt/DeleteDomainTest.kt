@@ -146,9 +146,24 @@ class DeleteDomainTest {
             "dumpxml" to ok(xml),
             "dominfo" to ok("State: running\n"),
         )
-        assertTrue(VirshClient(host, "qemu:///system").createSnapshot("vm", "s1", null))
+        assertEquals(VirshClient.SnapshotKind.EXTERNAL, VirshClient(host, "qemu:///system").createSnapshot("vm", "s1", null))
         val cmd = host.commands.last { "snapshot-create-as" in it }
         assertTrue(cmd, cmd.contains("--memspec file=/pool/vm-s1.mem,snapshot=external"))
         assertTrue(cmd, cmd.contains("--diskspec vda,snapshot=external") && cmd.contains("--diskspec sda,snapshot=no"))
+    }
+
+    @Test fun vfioVmSnapshotsDisksOnly() = runBlocking {
+        val xml = "<domain type='kvm'><name>vm</name><devices><disk type='file' device='disk'><source file='/pool/vm.qcow2'/>" +
+            "<target dev='vda' bus='virtio'/></disk></devices></domain>"
+        val host = FakeHost(
+            "--disk-only" to ok(),
+            "--memspec" to err("Requested operation is not valid: cannot migrate domain: 0000:03:00.0: VFIO migration is not supported in kernel"),
+            "snapshot-create-as" to err("Operation not supported: internal snapshots of a VM with pflash based firmware require QCOW2 nvram format"),
+            "dumpxml" to ok(xml),
+            "dominfo" to ok("State: running\n"),
+        )
+        assertEquals(VirshClient.SnapshotKind.DISKS_ONLY, VirshClient(host, "qemu:///system").createSnapshot("vm", "s1", null))
+        val cmd = host.commands.last { "snapshot-create-as" in it }
+        assertTrue(cmd, cmd.contains("--disk-only") && cmd.contains("--diskspec vda,snapshot=external"))
     }
 }

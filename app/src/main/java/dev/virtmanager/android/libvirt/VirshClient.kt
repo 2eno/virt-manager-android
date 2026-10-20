@@ -368,34 +368,47 @@ class VirshClient(
         return snapshots.zip(xmls).mapNotNull { (s, xml) -> xml?.let { runCatching { s to Parsers.parseSnapshotXml(it) }.getOrNull() } }.toMap()
     }
 
+    /** How [createSnapshot] stored a snapshot. */
+    enum class SnapshotKind { INTERNAL, EXTERNAL, DISKS_ONLY }
+
     /**
      * Takes a snapshot like virt-manager: internal (inside the qcow2 images) where libvirt
-     * allows it, else external. Internal ones are impossible for UEFI VMs whose NVRAM isn't
-     * qcow2, which is libvirt's default; then the disks get overlay files and, for a running VM,
-     * the memory goes to a file next to the first disk. Returns true if it is external.
+     * allows it, else external. Internal ones are impossible for running UEFI VMs whose NVRAM
+     * isn't qcow2, which is libvirt's default; then the disks get overlay files and the memory
+     * goes to a file next to the first disk. A VM with passed-through PCI devices (VFIO) can't
+     * have its memory saved at all, so it gets the disks only, as after a power cut.
      */
-    suspend fun createSnapshot(name: String, snapshot: String, description: String?): Boolean {
+    suspend fun createSnapshot(name: String, snapshot: String, description: String?): SnapshotKind {
         val base = mutableListOf("snapshot-create-as", name, snapshot)
         if (!description.isNullOrBlank()) base += listOf("--description", description)
         try {
             virsh(*base.toTypedArray())
-            return false
+            return SnapshotKind.INTERNAL
         } catch (e: VirshException) {
             if (!isInternalSnapshotUnsupported(e.message)) throw e
         }
-        virsh(*externalSnapshotArgs(base, Parsers.parseDomainXml(dumpXml(name)), name, snapshot,
-            running = runCatching { domInfo(name).state.isActive }.getOrDefault(false)).toTypedArray())
-        return true
+        val def = Parsers.parseDomainXml(dumpXml(name))
+        val running = runCatching { domInfo(name).state.isActive }.getOrDefault(false)
+        if (running) {
+            try {
+                virsh(*externalSnapshotArgs(base, def, name, snapshot, withMemory = true).toTypedArray())
+                return SnapshotKind.EXTERNAL
+            } catch (e: VirshException) {
+                if (!isMemoryUnsaveable(e.message)) throw e
+            }
+        }
+        virsh(*externalSnapshotArgs(base, def, name, snapshot, withMemory = false).toTypedArray())
+        return if (running) SnapshotKind.DISKS_ONLY else SnapshotKind.EXTERNAL
     }
 
     // --- Snapshots helpers ---------------------------------------------------------------
 
     /** Arguments for an external snapshot: file disks get overlays, other devices are skipped. */
-    internal fun externalSnapshotArgs(base: List<String>, def: DomainDefinition, name: String, snapshot: String, running: Boolean): List<String> {
+    internal fun externalSnapshotArgs(base: List<String>, def: DomainDefinition, name: String, snapshot: String, withMemory: Boolean): List<String> {
         val args = base.toMutableList()
         val disks = def.disks.filter { it.target != null }
         val withOverlay = disks.filter { it.device == "disk" && !it.readOnly && it.type == "file" && it.source != null }
-        if (running) {
+        if (withMemory) {
             val dir = withOverlay.firstOrNull()?.source?.substringBeforeLast('/') ?: "/var/lib/libvirt/qemu/snapshot"
             args += listOf("--memspec", "file=$dir/$name-$snapshot.mem,snapshot=external")
         } else {
@@ -403,6 +416,13 @@ class VirshClient(
         }
         disks.forEach { d -> args += listOf("--diskspec", "${d.target},snapshot=" + if (d in withOverlay) "external" else "no") }
         return args
+    }
+
+    /** Saving memory works like a migration, which passed-through devices (VFIO) don't support. */
+    private fun isMemoryUnsaveable(message: String?): Boolean {
+        val m = message ?: return false
+        return m.contains("cannot migrate", true) || m.contains("migration is not supported", true) ||
+            (m.contains("VFIO", true) && m.contains("migrat", true))
     }
 
     private fun isInternalSnapshotUnsupported(message: String?): Boolean {

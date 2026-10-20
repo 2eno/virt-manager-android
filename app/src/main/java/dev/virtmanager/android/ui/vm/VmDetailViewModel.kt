@@ -202,7 +202,12 @@ class VmDetailViewModel(
     }
 
     fun createSnapshot(snap: String, description: String?) = snapshotOp("Snapshot \"$snap\" created") {
-        if (createSnapshot(name, snap, description)) "Snapshot \"$snap\" created as an external snapshot (UEFI firmware rules out internal ones)" else null
+        when (createSnapshot(name, snap, description)) {
+            VirshClient.SnapshotKind.INTERNAL -> null
+            VirshClient.SnapshotKind.EXTERNAL -> "Snapshot \"$snap\" created as an external snapshot (UEFI firmware rules out internal ones)"
+            VirshClient.SnapshotKind.DISKS_ONLY ->
+                "Snapshot \"$snap\" holds the disks only: the memory of a VM with passed-through PCI devices can't be saved"
+        }
     }
     fun revertSnapshot(snap: String) = snapshotOp("Reverted to \"$snap\"") { revertSnapshot(name, snap); null }
     fun deleteSnapshot(snap: String) = snapshotOp("Snapshot \"$snap\" deleted") { deleteSnapshot(name, snap); null }

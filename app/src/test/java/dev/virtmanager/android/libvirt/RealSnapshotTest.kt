@@ -61,7 +61,7 @@ class RealSnapshotTest {
     @Test fun biosVmGetsInternalSnapshots() = runBlocking {
         define("snap-bios", uefi = false)
         virsh.start("snap-bios")
-        assertFalse(virsh.createSnapshot("snap-bios", "s1", "first"))
+        assertEquals(VirshClient.SnapshotKind.INTERNAL, virsh.createSnapshot("snap-bios", "s1", "first"))
         assertEquals(listOf(false), virsh.snapshots("snap-bios").map { it.external })
         virsh.revertSnapshot("snap-bios", "s1")
         virsh.deleteSnapshot("snap-bios", "s1")
@@ -72,8 +72,8 @@ class RealSnapshotTest {
         define("snap-uefi", uefi = true)
         virsh.start("snap-uefi")
         // Running: disk overlays plus a memory file; the install ISO gets no overlay.
-        assertTrue(virsh.createSnapshot("snap-uefi", "s1", null))
-        assertTrue(virsh.createSnapshot("snap-uefi", "s2", null))
+        assertEquals(VirshClient.SnapshotKind.EXTERNAL, virsh.createSnapshot("snap-uefi", "s1", null))
+        assertEquals(VirshClient.SnapshotKind.EXTERNAL, virsh.createSnapshot("snap-uefi", "s2", null))
         assertEquals(listOf(true, true), virsh.snapshots("snap-uefi").map { it.external })
         assertTrue(files("snap-uefi").toString(), files("snap-uefi").contains("snap-uefi-s1.mem"))
         assertTrue(virsh.definition("snap-uefi").disks.first { it.device == "cdrom" }.source!!.endsWith(".iso"))
@@ -87,7 +87,7 @@ class RealSnapshotTest {
 
         // Shut off, libvirt can snapshot the disks internally (only running VMs need pflash).
         virsh.destroy("snap-uefi")
-        assertFalse(virsh.createSnapshot("snap-uefi", "off", null))
+        assertEquals(VirshClient.SnapshotKind.INTERNAL, virsh.createSnapshot("snap-uefi", "off", null))
         assertEquals("shutoff", virsh.snapshots("snap-uefi").single().state)
     }
 
@@ -103,5 +103,17 @@ class RealSnapshotTest {
         assertTrue(report.notDeleted.toString(), report.notDeleted.isEmpty())
         assertEquals(emptyList<String>(), files("snap-uefi"))
         assertTrue(File("$images/debian-13-netinst.iso").exists())
+    }
+
+    /** What a VM with passed-through PCI devices gets: disks only, while it keeps running. */
+    @Test fun runningVmDiskOnlySnapshot() = runBlocking {
+        define("snap-uefi", uefi = true)
+        virsh.start("snap-uefi")
+        val def = Parsers.parseDomainXml(virsh.dumpXml("snap-uefi"))
+        virsh.virsh(*virsh.externalSnapshotArgs(listOf("snapshot-create-as", "snap-uefi", "d1"), def, "snap-uefi", "d1", withMemory = false).toTypedArray())
+        assertTrue(virsh.domInfo("snap-uefi").state.isActive)
+        assertEquals("disk-snapshot", virsh.snapshots("snap-uefi").single().state)
+        virsh.deleteSnapshot("snap-uefi", "d1")
+        assertEquals(listOf("snap-uefi.qcow2"), files("snap-uefi"))
     }
 }
