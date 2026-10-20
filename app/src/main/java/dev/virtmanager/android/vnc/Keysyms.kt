@@ -1,5 +1,6 @@
 package dev.virtmanager.android.vnc
 
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 
 /** X11 keysyms used by the RFB protocol. */
@@ -70,6 +71,18 @@ object Keysyms {
     fun combo(modifiers: List<Int>, keysym: Int): IntArray {
         val shift = needsShift(keysym) && SHIFT_L !in modifiers
         return (modifiers + listOfNotNull(SHIFT_L.takeIf { shift }) + keysym).toIntArray()
+    }
+
+    /**
+     * The character a key event types, or null for keys that type none. Dead keys (accents
+     * that combine with the next letter) give their accent, which [ascii] turns into e.g. "~".
+     */
+    fun textOf(event: KeyEvent): String? {
+        val c = event.unicodeChar
+        if (c == 0) return null
+        val code = if (c and KeyCharacterMap.COMBINING_ACCENT != 0) c and KeyCharacterMap.COMBINING_ACCENT_MASK else c
+        if (code < 0x20 && code != '\n'.code && code != '\t'.code) return null
+        return String(Character.toChars(code))
     }
 
     fun forAndroidKey(keyCode: Int): Int? = when (keyCode) {

@@ -272,9 +272,17 @@ fun VncScreen(connectionId: String, vmName: String, onBack: () -> Unit) {
                     .size(1.dp)
                     .focusRequester(focus)
                     .onPreviewKeyEvent { e ->
-                        val sym = Keysyms.forAndroidKey(e.key.nativeKeyCode) ?: return@onPreviewKeyEvent false
-                        if (sym == Keysyms.SHIFT_L) shiftHeld = e.type == KeyEventType.KeyDown
-                        client?.sendKey(sym, e.type == KeyEventType.KeyDown)
+                        val sym = Keysyms.forAndroidKey(e.key.nativeKeyCode)
+                        if (sym != null) {
+                            if (sym == Keysyms.SHIFT_L) shiftHeld = e.type == KeyEventType.KeyDown
+                            client?.sendKey(sym, e.type == KeyEventType.KeyDown)
+                            return@onPreviewKeyEvent true
+                        }
+                        // Keys that type a character (e.g. the digits row of some soft keyboards,
+                        // or a hardware keyboard) are sent here and never reach the text field;
+                        // letting the field insert them too typed some characters twice.
+                        val text = Keysyms.textOf(e.nativeKeyEvent) ?: return@onPreviewKeyEvent false
+                        if (e.type == KeyEventType.KeyDown) sendText(text)
                         true
                     },
             )
