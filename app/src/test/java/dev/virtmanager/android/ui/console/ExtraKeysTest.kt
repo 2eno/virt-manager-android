@@ -52,4 +52,17 @@ class ExtraKeysTest {
         assertTrue("~!@#$%^&*()_+{}|:\"<>?".all { Keysyms.needsShift(it.code) })
         assertTrue("`1234567890-=[]\\;',./ az".none { Keysyms.needsShift(it.code) })
     }
+
+    @Test fun lookAlikesBecomeAscii() {
+        // Spacing tilde, combining (dead-key) tilde, fullwidth tilde: all type "~".
+        for (c in listOf('\u02DC', '\u0303', '\uFF5E')) {
+            assertEquals(listOf(Keysyms.SHIFT_L, '~'.code), Keysyms.combo(emptyList(), Keysyms.forChar(c)).toList())
+        }
+        assertEquals('\''.code, Keysyms.forChar('\u2019'))
+        assertEquals('"'.code, Keysyms.forChar('\u201C'))
+        assertEquals('-'.code, Keysyms.forChar('\u2013'))
+        assertEquals('A'.code, Keysyms.forChar('\uFF21'))
+        assertEquals('é'.code, Keysyms.forChar('é')) // Latin-1 stays as it is
+        assertTrue(ExtraKeys.fnRow.any { it.label == "~" })
+    }
 }

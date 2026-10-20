@@ -27,11 +27,31 @@ object Keysyms {
     fun function(n: Int) = F1 + (n - 1)
 
     /** Keysym for a printable character (Latin-1 maps 1:1, everything else via the Unicode range). */
-    fun forChar(c: Char): Int = when {
-        c == '\n' -> RETURN
-        c == '\t' -> TAB
-        c.code in 0x20..0xFF -> c.code
-        else -> 0x01000000 or c.code
+    fun forChar(c: Char): Int {
+        val ch = ascii(c)
+        return when {
+            ch == '\n' -> RETURN
+            ch == '\t' -> TAB
+            ch.code in 0x20..0xFF -> ch.code
+            else -> 0x01000000 or ch.code
+        }
+    }
+
+    /**
+     * Soft keyboards often type look-alikes instead of ASCII: a spacing or combining (dead-key)
+     * tilde, typographic quotes and dashes, fullwidth forms. QEMU can only type what a US
+     * keyboard has, so these become the ASCII character they stand for.
+     */
+    fun ascii(c: Char): Char = when (c) {
+        '\u02DC', '\u0303', '\u223C', '\u2053', '\u301C' -> '~'
+        '\u02CB', '\u0300', '\u2035' -> '`'
+        '\u02C6', '\u0302', '\u2038' -> '^'
+        '\u2018', '\u2019', '\u201A', '\u201B', '\u2032', '\u02BC' -> '\''
+        '\u201C', '\u201D', '\u201E', '\u201F', '\u2033' -> '"'
+        '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2212' -> '-'
+        '\u00A0', '\u2007', '\u202F' -> ' '
+        in '\uFF01'..'\uFF5E' -> (c.code - 0xFEE0).toChar() // fullwidth ASCII
+        else -> c
     }
 
     /** Printable ASCII that a US keyboard types with Shift (letters aside). */

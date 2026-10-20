@@ -109,7 +109,11 @@ object ExtraKeys {
     )
 
     /** Shown above the two rows while FN is on. */
-    val fnRow: List<ExtraKey> = listOf(mod("SUPER", Keysyms.SUPER_L), mod("SHIFT", Keysyms.SHIFT_L), key("INS", Keysyms.INSERT)) +
+    val fnRow: List<ExtraKey> = listOf(
+        mod("SUPER", Keysyms.SUPER_L), mod("SHIFT", Keysyms.SHIFT_L), key("INS", Keysyms.INSERT),
+        // Symbols some soft keyboards only offer as dead keys or look-alikes.
+        char('~'), char('`'), char('^'), char('|'),
+    ) +
         (1..12).map { key("F$it", Keysyms.function(it)) }
 }
 
