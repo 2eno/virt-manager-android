@@ -115,8 +115,9 @@ object QemuAccess {
                 val dir = path.substringBeforeLast('/')
                 listOf(
                     "sudo journalctl -k -b | grep 'apparmor=\"DENIED\"' | tail -5",
+                    // Debian doesn't ship the local/abstractions folder until something is in it.
+                    "sudo mkdir -p /etc/apparmor.d/local/abstractions",
                     "echo '$dir/** rwk,' | sudo tee -a /etc/apparmor.d/local/abstractions/libvirt-qemu",
-                    "sudo systemctl reload apparmor",
                 )
             }
     }
