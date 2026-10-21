@@ -236,7 +236,13 @@ object Parsers {
                 val target = d.child("target")?.attr("dev") ?: return@mapNotNull null
                 d.child("source")?.let { it.attr("file") ?: it.attr("dev") }?.let { target to it }
             }.toMap()
-        return SnapshotFiles(memory != null || overlays.isNotEmpty(), memory, overlays, base)
+        val media = root.child("domain")?.child("devices")?.children("disk").orEmpty()
+            .filter { it.attr("device") in setOf("cdrom", "floppy") }
+            .mapNotNull { d ->
+                val target = d.child("target")?.attr("dev") ?: return@mapNotNull null
+                d.child("source")?.attr("file")?.let { target to it }
+            }.toMap()
+        return SnapshotFiles(memory != null || overlays.isNotEmpty(), memory, overlays, base, media)
     }
 
     // ---------------------------------------------------------------------------------------

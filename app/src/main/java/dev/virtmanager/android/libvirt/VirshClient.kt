@@ -5,6 +5,7 @@ import dev.virtmanager.android.libvirt.config.DomainConfig
 import dev.virtmanager.android.libvirt.config.HostDevice
 import dev.virtmanager.android.libvirt.config.HostInventory
 import dev.virtmanager.android.libvirt.config.OsVariant
+import dev.virtmanager.android.libvirt.config.SnapshotRepair
 
 /**
  * A thin, typed wrapper around the `virsh` CLI executed on the remote host. This is the Android
@@ -444,8 +445,36 @@ class VirshClient(
         return m.contains("internal snapshot", true) && (m.contains("not supported", true) || m.contains("require", true))
     }
 
-    suspend fun revertSnapshot(name: String, snapshot: String) = virsh("snapshot-revert", name, snapshot)
-    suspend fun deleteSnapshot(name: String, snapshot: String) = virsh("snapshot-delete", name, snapshot)
+    suspend fun revertSnapshot(name: String, snapshot: String) {
+        virsh("snapshot-revert", name, snapshot)
+        // Best effort: a failed repair must not make the revert look failed.
+        runCatching { restoreSnapshotMedia(name, snapshot) }
+    }
+
+    suspend fun deleteSnapshot(name: String, snapshot: String) {
+        restoreSnapshotMedia(name, snapshot)
+        virsh("snapshot-delete", name, snapshot)
+    }
+
+    /**
+     * Repairs what reverting to an external snapshot does to CD-ROMs (see [SnapshotRepair]):
+     * the snapshot's metadata gets its media disks back to "not snapshotted", and the saved
+     * configuration its ISO with the right format. The running VM keeps its CD-ROM until it
+     * is shut down. Returns whether anything was repaired.
+     */
+    suspend fun restoreSnapshotMedia(name: String, snapshot: String): Boolean {
+        val snapXml = runCatching { virsh("snapshot-dumpxml", "--security-info", name, snapshot) }.getOrNull() ?: return false
+        var repaired = false
+        SnapshotRepair.fixSnapshot(snapXml)?.let { fixed ->
+            virsh("snapshot-create", name, "/dev/stdin", "--redefine", stdin = fixed)
+            repaired = true
+        }
+        SnapshotRepair.fixDomain(dumpXml(name, inactive = true), snapXml)?.let { fixed ->
+            defineXml(fixed)
+            repaired = true
+        }
+        return repaired
+    }
 
     // --- Networks --------------------------------------------------------------------------
 

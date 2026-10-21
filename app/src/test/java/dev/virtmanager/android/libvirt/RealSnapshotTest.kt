@@ -43,7 +43,8 @@ class RealSnapshotTest {
             runCatching { virsh.destroy(vm) }
             runCatching { virsh.undefine(vm) }
         }
-        local.run("rm -f $images/snap-bios* $images/snap-uefi*", null)
+        // Also the overlays libvirt puts on the ISO when reverting (debian-13-netinst.<time>).
+        local.run("rm -f $images/snap-bios* $images/snap-uefi* $images/debian-13-netinst.[0-9]*", null)
         runCatching { virsh.refreshPool("default") }
     }
 
@@ -80,6 +81,10 @@ class RealSnapshotTest {
 
         virsh.revertSnapshot("snap-uefi", "s1")
         assertTrue(virsh.domInfo("snap-uefi").state.isActive)
+        // libvirt put an overlay on the install ISO when reverting; the app gives the saved
+        // config the ISO back (the running VM keeps the overlay until it is shut down).
+        val saved = Parsers.parseDomainXml(virsh.dumpXml("snap-uefi", inactive = true))
+        assertTrue(saved.disks.first { it.device == "cdrom" }.source!!.endsWith(".iso"))
         virsh.deleteSnapshot("snap-uefi", "s2")
         virsh.deleteSnapshot("snap-uefi", "s1")
         assertTrue(virsh.snapshots("snap-uefi").isEmpty())

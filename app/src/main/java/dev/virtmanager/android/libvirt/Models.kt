@@ -202,6 +202,8 @@ data class SnapshotFiles(
     val overlays: Map<String, String>,
     /** Disk target → the image the VM used when the snapshot was taken (the overlay's backing). */
     val base: Map<String, String>,
+    /** CD-ROM/floppy target → the media inserted when the snapshot was taken. */
+    val media: Map<String, String> = emptyMap(),
 )
 
 class VirshException(message: String) : Exception(message)
