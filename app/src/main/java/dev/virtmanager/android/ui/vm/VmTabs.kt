@@ -202,6 +202,17 @@ fun VmSnapshotsTab(state: VmUiState, vm: VmDetailViewModel) {
             onDismiss = { deleting = null },
         )
     }
+    state.snapshotNeedsShutdown?.let { s ->
+        ConfirmDialog(
+            title = "Delete \"$s\" with the VM shut down?",
+            message = "While the VM runs, its disks can't be merged back on this host (QEMU may only read the image " +
+                "below the snapshot, as the host's AppArmor policy allows). Shut down, the merge works. The guest " +
+                "is shut down normally and the snapshot deleted once it is off.",
+            confirmLabel = "Shut down and delete",
+            onConfirm = { vm.shutDownAndDeleteSnapshot(s) },
+            onDismiss = vm::dismissSnapshotNeedsShutdown,
+        )
+    }
 }
 
 @Composable

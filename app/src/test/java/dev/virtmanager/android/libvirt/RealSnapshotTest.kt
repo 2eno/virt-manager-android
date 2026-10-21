@@ -113,7 +113,10 @@ class RealSnapshotTest {
         virsh.virsh(*virsh.externalSnapshotArgs(listOf("snapshot-create-as", "snap-uefi", "d1"), def, "snap-uefi", "d1", withMemory = false).toTypedArray())
         assertTrue(virsh.domInfo("snap-uefi").state.isActive)
         assertEquals("disk-snapshot", virsh.snapshots("snap-uefi").single().state)
+        // What "Shut down and delete" does when the host won't let QEMU merge it live.
+        virsh.destroy("snap-uefi")
         virsh.deleteSnapshot("snap-uefi", "d1")
+        assertTrue(virsh.definition("snap-uefi").disks.first { it.device == "disk" }.source!!.endsWith("snap-uefi.qcow2"))
         assertEquals(listOf("snap-uefi.qcow2"), files("snap-uefi"))
     }
 }

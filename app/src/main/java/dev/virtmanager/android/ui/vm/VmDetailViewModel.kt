@@ -47,6 +47,8 @@ data class VmUiState(
     val customizing: Boolean = false,
     /** Set after Begin installation succeeds; the screen opens the console and clears it. */
     val openConsole: Boolean = false,
+    /** A snapshot that can only be deleted with the VM shut off. */
+    val snapshotNeedsShutdown: String? = null,
     /** A start failed because QEMU can't reach image files; offered to fix with setfacl. */
     val accessProblem: QemuAccess.Problem? = null,
 )
@@ -210,7 +212,50 @@ class VmDetailViewModel(
         }
     }
     fun revertSnapshot(snap: String) = snapshotOp("Reverted to \"$snap\"") { revertSnapshot(name, snap); null }
-    fun deleteSnapshot(snap: String) = snapshotOp("Snapshot \"$snap\" deleted") { deleteSnapshot(name, snap); null }
+    fun deleteSnapshot(snap: String) = viewModelScope.launch {
+        _state.update { it.copy(busy = true) }
+        try {
+            virsh().deleteSnapshot(name, snap)
+            _state.update { it.copy(message = "Snapshot \"$snap\" deleted") }
+        } catch (t: Throwable) {
+            // A running VM merges an external snapshot itself (block-commit), which needs write
+            // access to the image below it; hosts with AppArmor only give QEMU read access to
+            // that one. Shut off, libvirt merges the files and it works.
+            if (t.message?.contains("block-commit") == true) _state.update { it.copy(snapshotNeedsShutdown = snap) }
+            else _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+        } finally {
+            _state.update { it.copy(busy = false) }
+            loadSnapshots()
+            poll(withInfo = true)
+        }
+    }
+
+    fun dismissSnapshotNeedsShutdown() = _state.update { it.copy(snapshotNeedsShutdown = null) }
+
+    /** Shuts the guest down, waits until it is off (up to 3 minutes), then deletes [snap]. */
+    fun shutDownAndDeleteSnapshot(snap: String) = viewModelScope.launch {
+        _state.update { it.copy(snapshotNeedsShutdown = null, busy = true, message = "Shutting down to delete \"$snap\"…") }
+        try {
+            val v = virsh()
+            v.shutdown(name)
+            val deadline = System.currentTimeMillis() + 180_000
+            while (v.domInfo(name).state.isActive) {
+                if (System.currentTimeMillis() > deadline) {
+                    _state.update { it.copy(error = "The guest didn't shut down within 3 minutes; shut it down, then delete the snapshot.") }
+                    return@launch
+                }
+                delay(2000)
+            }
+            v.deleteSnapshot(name, snap)
+            _state.update { it.copy(message = "Snapshot \"$snap\" deleted") }
+        } catch (t: Throwable) {
+            _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+        } finally {
+            _state.update { it.copy(busy = false) }
+            loadSnapshots()
+            poll(withInfo = true)
+        }
+    }
 
     /** Starts the VM after customizing, bringing up any inactive virtual networks it uses first. */
     fun beginInstallation() = viewModelScope.launch {
