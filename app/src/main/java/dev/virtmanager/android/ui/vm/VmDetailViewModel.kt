@@ -49,6 +49,8 @@ data class VmUiState(
     val openConsole: Boolean = false,
     /** A snapshot that can only be deleted with the VM shut off. */
     val snapshotNeedsShutdown: String? = null,
+    /** QEMU was refused an image file itself; shows the commands to fix it on the host. */
+    val fileProblem: QemuAccess.FileProblem? = null,
     /** A start failed because QEMU can't reach image files; offered to fix with setfacl. */
     val accessProblem: QemuAccess.Problem? = null,
 )
@@ -72,7 +74,7 @@ class VmDetailViewModel(
     init {
         reloadDefinition()
         // The wizard's start failed: it may be QEMU being refused the ISO's folder.
-        if (QemuAccess.isPermissionError(notice)) diagnoseAccess()
+        if (QemuAccess.isPermissionError(notice)) diagnoseAccess(notice)
     }
 
     fun startPolling() {
@@ -128,7 +130,7 @@ class VmDetailViewModel(
             if (reload) reloadDefinition()
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t)) }
-            if (QemuAccess.isPermissionError(t.message)) diagnoseAccess()
+            if (QemuAccess.isPermissionError(t.message)) diagnoseAccess(t.message)
         } finally {
             _state.update { it.copy(busy = false) }
         }
@@ -221,8 +223,12 @@ class VmDetailViewModel(
             // A running VM merges an external snapshot itself (block-commit), which needs write
             // access to the image below it; hosts with AppArmor only give QEMU read access to
             // that one. Shut off, libvirt merges the files and it works.
-            if (t.message?.contains("block-commit") == true) _state.update { it.copy(snapshotNeedsShutdown = snap) }
-            else _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+            val running = _state.value.stats?.state?.isActive == true
+            if (running && t.message?.contains("block-commit") == true) _state.update { it.copy(snapshotNeedsShutdown = snap) }
+            else {
+                _state.update { it.copy(error = ConnectionManager.friendly(t)) }
+                if (QemuAccess.isPermissionError(t.message)) diagnoseAccess(t.message)
+            }
         } finally {
             _state.update { it.copy(busy = false) }
             loadSnapshots()
@@ -267,15 +273,24 @@ class VmDetailViewModel(
             reloadDefinition()
         } catch (t: Throwable) {
             _state.update { it.copy(error = ConnectionManager.friendly(t)) }
-            if (QemuAccess.isPermissionError(t.message)) diagnoseAccess()
+            if (QemuAccess.isPermissionError(t.message)) diagnoseAccess(t.message)
         } finally {
             _state.update { it.copy(busy = false) }
         }
     }
 
-    private fun diagnoseAccess() = viewModelScope.launch {
-        runCatching { virsh().qemuAccessProblem(name) }.getOrNull()?.let { p -> _state.update { it.copy(accessProblem = p) } }
+    private fun diagnoseAccess(message: String?) = viewModelScope.launch {
+        val folders = runCatching { virsh().qemuAccessProblem(name) }.getOrNull()
+        if (folders != null) {
+            _state.update { it.copy(accessProblem = folders) }
+            return@launch
+        }
+        // The folders are fine: look at the refused file itself (owner/mode, AppArmor).
+        val path = QemuAccess.refusedPath(message) ?: return@launch
+        runCatching { virsh().qemuFileProblem(name, path) }.getOrNull()?.let { p -> _state.update { it.copy(fileProblem = p) } }
     }
+
+    fun dismissFileProblem() = _state.update { it.copy(fileProblem = null) }
 
     fun dismissAccessProblem() = _state.update { it.copy(accessProblem = null) }
 

@@ -68,6 +68,8 @@ class HostViewModel(private val app: VirtManagerApp, val connectionId: String) :
     private val cpuTracker = HostCpuTracker()
     private var pollJob: Job? = null
     private var pollCount = 0
+    /** Whether the error shown came from polling (and so goes away when polling works again). */
+    private var pollFailed = false
     private var checkedInactive: Set<String>? = null
 
     private suspend fun conn(): LiveConnection = app.connections.connect(connectionId)
@@ -113,10 +115,13 @@ class HostViewModel(private val app: VirtManagerApp, val connectionId: String) :
                     hostMemHistory = snap.mem?.let { m ->
                         (s.hostMemHistory + (m.usedKiB.toFloat() / m.totalKiB.coerceAtLeast(1))).takeLast(60)
                     } ?: s.hostMemHistory,
-                    error = null,
+                    // Clear only a polling error; an action's error stays until dismissed.
+                    error = if (pollFailed) null else s.error,
                 )
             }
+            pollFailed = false
         } catch (t: Throwable) {
+            pollFailed = true
             _state.update { it.copy(loading = false, error = ConnectionManager.friendly(t)) }
             return
         }
@@ -156,7 +161,7 @@ class HostViewModel(private val app: VirtManagerApp, val connectionId: String) :
                 poll()
             } catch (t: Throwable) {
                 // The VM's page can diagnose and fix folder permissions; point there.
-                val hint = if (QemuAccess.isPermissionError(t.message)) "\nStart it from its page to fix the folder permissions." else ""
+                val hint = if (QemuAccess.isPermissionError(t.message)) "\nStart it from its page to see why and how to fix it." else ""
                 _state.update { it.copy(error = "$label failed: ${ConnectionManager.friendly(t)}$hint") }
             } finally {
                 _state.update { it.copy(busy = it.busy - name) }

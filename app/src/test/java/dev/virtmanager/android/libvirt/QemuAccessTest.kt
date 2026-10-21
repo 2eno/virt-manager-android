@@ -84,4 +84,21 @@ class QemuAccessTest {
         assertTrue(s, s.contains("dirname -- '/home/zeno/it'\"'\"'s here.iso'"))
         assertTrue(s.contains("getent passwd 64055"))
     }
+
+    @Test fun refusedImageFileIsDiagnosed() {
+        val msg = "internal error: process exited while connecting to monitor: qemu-system-x86_64: -blockdev {...}: " +
+            "Could not open '/var/lib/libvirt/images/AI-Chat.qcow2': Permission denied"
+        val path = QemuAccess.refusedPath(msg)!!
+        assertEquals("/var/lib/libvirt/images/AI-Chat.qcow2", path)
+
+        // Owned by root, mode 600: QEMU's user can't read it.
+        val root = QemuAccess.parseFileCheck("0 0 600\nN\n", path, "libvirt-qemu", qemu, setOf(kvmGroup))
+        assertFalse(root.readable)
+        assertEquals(listOf("sudo chown libvirt-qemu: /var/lib/libvirt/images/AI-Chat.qcow2"), root.commands)
+
+        // Readable for QEMU, AppArmor on: the profile is the problem.
+        val aa = QemuAccess.parseFileCheck("64055 108 600\nY\n", path, "libvirt-qemu", qemu, setOf(kvmGroup))
+        assertTrue(aa.readable && aa.apparmor)
+        assertTrue(aa.commands.any { it.contains("'/var/lib/libvirt/images/** rwk,'") && it.contains("abstractions/libvirt-qemu") })
+    }
 }

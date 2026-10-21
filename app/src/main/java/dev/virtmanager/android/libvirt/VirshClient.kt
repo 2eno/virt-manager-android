@@ -191,6 +191,20 @@ class VirshClient(
     }
 
     /**
+     * Why QEMU was refused [path] when its folders are fine: the file's own permissions, or
+     * AppArmor. Null if QEMU's user can't be told.
+     */
+    suspend fun qemuFileProblem(name: String, path: String): QemuAccess.FileProblem? {
+        val def = Parsers.parseDomainXml(dumpXml(name, inactive = true))
+        val (uid, gid) = runCatching { QemuAccess.qemuIdentity(virsh("capabilities"), def.domainType) }.getOrNull() ?: return null
+        val ids = runner.run("u=\$(getent passwd $uid | cut -d: -f1); echo \"\$u\"; [ -n \"\$u\" ] && id -G \"\$u\"", null).stdout.lines()
+        val user = ids.getOrNull(0)?.trim()?.ifEmpty { null } ?: uid.toString()
+        val gids = ids.getOrNull(1).orEmpty().split(' ').mapNotNull { it.trim().toIntOrNull() }.toSet() + gid
+        val r = runner.run(QemuAccess.fileCheckScript(path), null)
+        return QemuAccess.parseFileCheck(r.stdout, path, user, uid, gids)
+    }
+
+    /**
      * Lets QEMU's user pass through the folders of [problem] (search permission only, as
      * virt-manager does). Returns the folders that couldn't be changed, with the reason.
      */

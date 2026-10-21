@@ -100,6 +100,51 @@ object QemuAccess {
         return entries.firstOrNull { it[0] == "other" }?.let { 'x' in it[2] } ?: false
     }
 
+    /**
+     * QEMU was refused a file although it may enter its folders: either the file itself isn't
+     * readable for QEMU's user, or a mandatory access policy (AppArmor) blocks it. Holds the
+     * commands that fix it on the host, which need root.
+     */
+    data class FileProblem(val path: String, val user: String, val apparmor: Boolean, val readable: Boolean) {
+        val commands: List<String>
+            get() = if (!readable) {
+                listOf("sudo chown $user: ${Shell.quote(path)}")
+            } else {
+                // libvirt's AppArmor profile for the VM misses the image (common with snapshot
+                // chains); let QEMU use everything in the image folder, then retry.
+                val dir = path.substringBeforeLast('/')
+                listOf(
+                    "sudo journalctl -k -b | grep 'apparmor=\"DENIED\"' | tail -5",
+                    "echo '$dir/** rwk,' | sudo tee -a /etc/apparmor.d/local/abstractions/libvirt-qemu",
+                    "sudo systemctl reload apparmor",
+                )
+            }
+    }
+
+    /** The file named in "Could not open '<file>': Permission denied". */
+    fun refusedPath(message: String?): String? =
+        message?.let { Regex("Could not open '([^']+)': Permission denied").find(it)?.groupValues?.get(1) }
+
+    /** Owner, group and mode of [path], and whether AppArmor is on; see [parseFileCheck]. */
+    fun fileCheckScript(path: String): String =
+        "stat -c '%u %g %a' -- ${Shell.quote(path)} 2>/dev/null || echo '- - -'; " +
+            "cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo N"
+
+    fun parseFileCheck(out: String, path: String, user: String, uid: Int, gids: Set<Int>): FileProblem {
+        val lines = out.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val f = lines.getOrNull(0)?.split(' ').orEmpty()
+        val owner = f.getOrNull(0)?.toIntOrNull()
+        val group = f.getOrNull(1)?.toIntOrNull()
+        val mode = f.getOrNull(2)?.toIntOrNull(8)
+        // Unknown (we couldn't stat it ourselves): assume the mode bits aren't the problem.
+        val readable = owner == null || group == null || mode == null || uid == 0 || when {
+            uid == owner -> mode and 0b100_000_000 != 0
+            group in gids -> mode and 0b000_100_000 != 0
+            else -> mode and 0b000_000_100 != 0
+        }
+        return FileProblem(path, user, apparmor = lines.getOrNull(1)?.startsWith("Y") == true, readable = readable)
+    }
+
     /** "Could not open '...': Permission denied" and libvirt's own access checks. */
     fun isPermissionError(message: String?): Boolean = message?.contains("Permission denied", ignoreCase = true) == true
 }

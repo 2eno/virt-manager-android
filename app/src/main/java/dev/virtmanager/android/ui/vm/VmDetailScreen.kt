@@ -1,6 +1,9 @@
 package dev.virtmanager.android.ui.vm
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.foundation.text.selection.SelectionContainer
 import dev.virtmanager.android.ui.theme.MonoStyle
 import dev.virtmanager.android.libvirt.QemuAccess
 import androidx.compose.material.icons.outlined.Lock
@@ -257,6 +260,7 @@ fun VmDetailScreen(
     state.deleteReport?.let { DeleteReportDialog(it, onDismiss = vm::dismissDeleteReport) }
 
     state.accessProblem?.let { p -> AccessProblemDialog(p, onFix = vm::fixAccessAndStart, onDismiss = vm::dismissAccessProblem) }
+    state.fileProblem?.let { p -> FileProblemDialog(p, onDismiss = vm::dismissFileProblem) }
 
     pending?.let { a ->
         ConfirmDialog(
@@ -328,5 +332,42 @@ private fun AccessProblemDialog(p: QemuAccess.Problem, onFix: () -> Unit, onDism
         },
         confirmButton = { Button(onClick = onFix) { Text("Fix and start") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
+    )
+}
+
+/** QEMU was refused an image file; the fix needs root on the host, so the commands are shown. */
+@Composable
+private fun FileProblemDialog(p: QemuAccess.FileProblem, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    val commands = p.commands.joinToString("\n")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Lock, null) },
+        title = { Text("QEMU may not open ${p.path.substringAfterLast('/')}") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    when {
+                        !p.readable -> "The file isn't readable for QEMU's user \"${p.user}\", and libvirt didn't fix that when " +
+                            "starting the VM. Give the file back to that user, as root on the host:"
+                        p.apparmor -> "The file's permissions are fine, but AppArmor is active on the host and the VM's profile " +
+                            "doesn't let QEMU open the file. That happens with snapshot chains (the images below a snapshot). " +
+                            "Check the denial, then allow QEMU the image folder, as root on the host:"
+                        else -> "The file's permissions look fine and AppArmor is off, so another security policy (e.g. " +
+                            "SELinux) blocks QEMU. Check the host's audit log."
+                    },
+                )
+                if (p.readable && !p.apparmor) return@Column
+                Spacer(Modifier.height(8.dp))
+                SelectionContainer { Text(commands, style = MonoStyle) }
+                Spacer(Modifier.height(8.dp))
+                Text("Then start the VM (or delete the snapshot) again.", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            if (p.readable && !p.apparmor) TextButton(onClick = onDismiss) { Text("OK") }
+            else TextButton(onClick = { clipboard.setText(AnnotatedString(commands)); onDismiss() }) { Text("Copy commands") }
+        },
+        dismissButton = { if (!p.readable || p.apparmor) TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
