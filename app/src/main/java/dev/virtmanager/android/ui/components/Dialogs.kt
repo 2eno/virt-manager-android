@@ -35,6 +35,10 @@ fun HostKeyDialog(prompt: HostKeyPrompt) {
         title = { Text(if (prompt.changed) "Host key changed!" else "Unknown host") },
         text = {
             Column {
+                prompt.hop?.let {
+                    Text(it, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(8.dp))
+                }
                 Text(
                     if (prompt.changed)
                         "The host key for ${prompt.host}:${prompt.port} differs from the one saved earlier. " +

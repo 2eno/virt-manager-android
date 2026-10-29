@@ -1,5 +1,6 @@
 package dev.virtmanager.android.ssh
 
+import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.HostKey
 import com.jcraft.jsch.HostKeyRepository
@@ -87,12 +88,14 @@ object SshCrypto {
 class SshSession private constructor(
     private val target: SshTarget,
     private val session: Session,
+    /** The jump host session this one runs over; owned by this session. */
+    private val via: SshSession? = null,
 ) : CommandRunner {
 
     // libvirtd/sshd limit concurrent sessions (MaxSessions defaults to 10); keep headroom.
     private val channelPermits = Semaphore(6)
 
-    val isConnected: Boolean get() = session.isConnected
+    val isConnected: Boolean get() = session.isConnected && (via?.isConnected ?: true)
 
     override suspend fun run(command: String, stdin: String?): ExecResult = withContext(Dispatchers.IO) {
         channelPermits.acquire()
@@ -163,12 +166,20 @@ class SshSession private constructor(
 
     fun close() {
         runCatching { session.disconnect() }
+        via?.close()
     }
 
     companion object {
+        private const val KEEPALIVE_MS = 20_000
+
+        /**
+         * Connects to [target], over a "direct-tcpip" channel of [via] if given (ProxyJump). The
+         * new session takes ownership of [via] only once it is connected.
+         */
         suspend fun connect(
             target: SshTarget,
             knownHosts: KnownHosts,
+            via: SshSession? = null,
             verifier: HostKeyVerifier,
         ): SshSession = withContext(Dispatchers.IO) {
             SshCrypto.configure()
@@ -198,10 +209,16 @@ class SshSession private constructor(
                 session.setConfig("compression.c2s", "zlib@openssh.com,zlib,none")
                 session.setConfig("compression_level", "6")
             }
-            session.setServerAliveInterval(20_000)
+            val proxy = via?.let { jump ->
+                ChannelProxy { host, port -> JschTcpChannel(jump.session.getStreamForwarder(host, port) as ChannelDirectTCPIP) }
+                    .also(session::setProxy)
+            }
+            session.setServerAliveInterval(KEEPALIVE_MS)
             session.setServerAliveCountMax(3)
             session.connect(20_000)
-            SshSession(target, session)
+            // Over a channel, keepalives are driven by this read timeout (see ChannelProxy).
+            proxy?.readTimeoutMs = KEEPALIVE_MS
+            SshSession(target, session, via)
         }
     }
 }

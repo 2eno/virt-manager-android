@@ -54,6 +54,11 @@ argument is shell-quoted.
 - **Connections** – multiple hosts, `qemu:///system`, `qemu:///session`, LXC, Xen or any
   custom libvirt URI; password or SSH key auth (paste, import, or generate an Ed25519 key in
   the app and copy the public key); optional `sudo -n`; SSH compression; auto-connect.
+- **Jump hosts** – like OpenSSH `ProxyJump`: a connection can go through another saved host
+  (which can itself use one). The second SSH session runs inside a `direct-tcpip` channel of
+  the first, so the jump host needs `AllowTcpForwarding` but neither libvirt nor netcat, and no
+  local port is opened for it. Every hop has its own login, password prompt, host key and
+  keepalives; errors name the hop. Hosts without libvirt can be saved as "SSH only".
 - **Security** – trust-on-first-use host key verification with fingerprint confirmation and a
   loud warning if a key changes; stored passwords/keys are encrypted with an AES-GCM key held
   in the Android Keystore; backups of app data are disabled.
@@ -150,6 +155,7 @@ Opt-in integration tests run against real services when these variables are set:
 | Variable | Purpose |
 | --- | --- |
 | `VMA_IT_SSH_PORT`, `VMA_IT_SSH_KEY` (`VMA_IT_SSH_USER`, default `root`) | sshd on 127.0.0.1 with `virsh` installed. `SshIntegrationTest` uses `test:///default` to cover host-key TOFU, polling, XML, stdin, PTY and port forwarding. |
+| `VMA_IT_JUMP_PORT`, `VMA_IT_NOFWD_PORT` | Two more sshds on 127.0.0.1 for the same key, the second with `AllowTcpForwarding no`. `JumpHostIntegrationTest` runs `virsh` and a console tunnel on the `VMA_IT_SSH_PORT` host through the jump host, and checks per-hop host keys and that errors (forwarding refused, unreachable target, wrong key, closed jump session) land on the right hop. |
 | `VMA_IT_VNC_PORT`, `VMA_IT_VNC_PW_PORT` + `VMA_IT_VNC_PW` | QEMU VNC displays (e.g. `qemu-system-x86_64 -display none -vnc 127.0.0.1:5`). `QemuVncIntegrationTest` renders the framebuffer and checks VNC password auth through the SSH tunnel. |
 | `VMA_IT_QEMU` | `qemu-system-x86_64` installed locally. `QemuKeyboardIntegrationTest` starts QEMU with key tracing and checks that typed symbols such as `!` reach the guest with Shift. |
 | `VMA_IT_TESTNODE` | Path to a libvirt test-driver node XML on that host; `AppScreenshotTest` runs the app under Robolectric and records `docs/screenshots`. |

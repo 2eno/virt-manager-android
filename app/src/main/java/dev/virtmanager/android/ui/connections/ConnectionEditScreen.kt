@@ -6,6 +6,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Password
@@ -53,6 +56,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,6 +71,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.virtmanager.android.data.AuthMethod
 import dev.virtmanager.android.data.ConnectionProfile
+import dev.virtmanager.android.data.JumpChain
 import dev.virtmanager.android.data.SecretCipher
 import dev.virtmanager.android.ssh.SshCrypto
 import dev.virtmanager.android.ui.app
@@ -108,6 +113,11 @@ fun ConnectionEditScreen(connectionId: String?, onDone: () -> Unit) {
     var showSecret by remember { mutableStateOf(false) }
     var publicKey by remember { mutableStateOf<String?>(null) }
     var uriMenu by remember { mutableStateOf(false) }
+    var sshOnly by remember { mutableStateOf(false) }
+    var jumpHostId by remember { mutableStateOf<String?>(null) }
+    var jumpExpanded by remember { mutableStateOf(false) }
+    var jumpMenu by remember { mutableStateOf(false) }
+    val profiles by app.repository.connections.collectAsState(initial = emptyList())
 
     LaunchedEffect(connectionId) {
         if (connectionId == null) return@LaunchedEffect
@@ -116,6 +126,7 @@ fun ConnectionEditScreen(connectionId: String?, onDone: () -> Unit) {
         name = p.name; host = p.host; port = p.port.toString(); username = p.username
         uri = p.libvirtUri; auth = p.authMethod; sudo = p.useSudo; compression = p.compression
         autoConnect = p.autoConnect
+        sshOnly = p.sshOnly; jumpHostId = p.jumpHostId; jumpExpanded = p.jumpHostId != null
         withContext(Dispatchers.Default) {
             password = SecretCipher.decrypt(p.encryptedPassword).orEmpty()
             privateKey = SecretCipher.decrypt(p.encryptedPrivateKey).orEmpty()
@@ -133,7 +144,7 @@ fun ConnectionEditScreen(connectionId: String?, onDone: () -> Unit) {
 
     val portValue = port.toIntOrNull()
     val valid = host.isNotBlank() && username.isNotBlank() && portValue != null && portValue in 1..65535 &&
-        uri.contains(":/") && (auth == AuthMethod.PASSWORD || privateKey.contains("PRIVATE KEY"))
+        (sshOnly || uri.contains(":/")) && (auth == AuthMethod.PASSWORD || privateKey.contains("PRIVATE KEY"))
 
     fun save() {
         scope.launch {
@@ -148,6 +159,8 @@ fun ConnectionEditScreen(connectionId: String?, onDone: () -> Unit) {
                     useSudo = sudo,
                     compression = compression,
                     autoConnect = autoConnect,
+                    sshOnly = sshOnly,
+                    jumpHostId = jumpHostId,
                     encryptedPassword = if (auth == AuthMethod.PASSWORD && savePassword) SecretCipher.encrypt(password) else null,
                     encryptedPrivateKey = if (auth == AuthMethod.KEY) SecretCipher.encrypt(privateKey.trim() + "\n") else null,
                     encryptedKeyPassphrase = if (auth == AuthMethod.KEY) SecretCipher.encrypt(passphrase) else null,
@@ -177,7 +190,8 @@ fun ConnectionEditScreen(connectionId: String?, onDone: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Hypervisor", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            ExposedDropdownMenuBox(expanded = uriMenu, onExpandedChange = { uriMenu = it }) {
+            SwitchRow("SSH only", "No libvirt on this host, e.g. a jump host for other connections", sshOnly) { sshOnly = it }
+            if (!sshOnly) ExposedDropdownMenuBox(expanded = uriMenu, onExpandedChange = { uriMenu = it }) {
                 OutlinedTextField(
                     value = uri,
                     onValueChange = { uri = it },
@@ -284,8 +298,50 @@ fun ConnectionEditScreen(connectionId: String?, onDone: () -> Unit) {
                 )
             }
 
+            val selfId = original?.id.orEmpty()
+            val lookup = { id: String -> profiles.firstOrNull { it.id == id } }
+            val jump = jumpHostId?.let(lookup)
+            ListItem(
+                headlineContent = { Text("Connect via jump host") },
+                supportingContent = {
+                    Text(
+                        when {
+                            jumpHostId == null -> "Like ProxyJump: reach this host through another saved host"
+                            jump == null -> "The selected jump host no longer exists"
+                            else -> "Via ${jump.name} (${jump.username}@${jump.host})"
+                        },
+                    )
+                },
+                trailingContent = { Icon(if (jumpExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null) },
+                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth().clickable { jumpExpanded = !jumpExpanded },
+            )
+            androidx.compose.animation.AnimatedVisibility(jumpExpanded) {
+                val candidates = profiles.filter { JumpChain.canJumpVia(selfId, it, lookup) }
+                ExposedDropdownMenuBox(expanded = jumpMenu, onExpandedChange = { jumpMenu = it }) {
+                    OutlinedTextField(
+                        value = jump?.name ?: if (jumpHostId == null) "None (direct connection)" else "Missing",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Jump host") },
+                        supportingText = { Text("Its own login and host key are used for the first hop; it needs AllowTcpForwarding") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(jumpMenu) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    )
+                    ExposedDropdownMenu(expanded = jumpMenu, onDismissRequest = { jumpMenu = false }) {
+                        DropdownMenuItem(text = { Text("None (direct connection)") }, onClick = { jumpHostId = null; jumpMenu = false })
+                        candidates.forEach { p ->
+                            DropdownMenuItem(
+                                text = { Column { Text(p.name); Text(p.displayUri, style = MaterialTheme.typography.bodySmall) } },
+                                onClick = { jumpHostId = p.id; jumpMenu = false },
+                            )
+                        }
+                    }
+                }
+            }
+
             Text("Options", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SwitchRow("Use sudo", "Run virsh through \"sudo -n\" (needs passwordless sudo)", sudo) { sudo = it }
+            if (!sshOnly) SwitchRow("Use sudo", "Run virsh through \"sudo -n\" (needs passwordless sudo)", sudo) { sudo = it }
             SwitchRow("SSH compression", "Faster consoles on slow links, slightly more CPU", compression) { compression = it }
             SwitchRow("Connect automatically", "Open this connection when the app starts", autoConnect) { autoConnect = it }
             Spacer(Modifier.height(24.dp))

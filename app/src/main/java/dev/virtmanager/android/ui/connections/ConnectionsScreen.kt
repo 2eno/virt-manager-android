@@ -133,6 +133,7 @@ fun ConnectionsScreen(
                     items(list, key = { it.id }) { profile ->
                         ConnectionCard(
                             profile = profile,
+                            via = profile.jumpHostId?.let { id -> list.firstOrNull { it.id == id }?.name ?: "missing jump host" },
                             status = status[profile.id] ?: ConnectionStatus.Disconnected,
                             onOpen = { vm.open(profile) },
                             onDisconnect = { vm.disconnect(profile.id) },
@@ -145,11 +146,12 @@ fun ConnectionsScreen(
         }
     }
 
-    passwordFor?.let { p ->
+    passwordFor?.let { req ->
+        val hop = req.hop
         PasswordDialog(
-            title = "Connect to ${p.name}",
-            message = "${p.username}@${p.host}",
-            onConfirm = { vm.connect(p, it) },
+            title = "Connect to ${req.profile.name}",
+            message = (if (hop.id != req.profile.id) "Jump host ${hop.name}: " else "") + "${hop.username}@${hop.host}",
+            onConfirm = { vm.passwordEntered(req, it) },
             onDismiss = { vm.passwordRequest.value = null },
         )
     }
@@ -168,6 +170,7 @@ fun ConnectionsScreen(
 @Composable
 private fun ConnectionCard(
     profile: ConnectionProfile,
+    via: String?,
     status: ConnectionStatus,
     onOpen: () -> Unit,
     onDisconnect: () -> Unit,
@@ -191,7 +194,7 @@ private fun ConnectionCard(
             Column(Modifier.weight(1f)) {
                 Text(profile.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    profile.displayUri,
+                    profile.displayUri + (via?.let { " via $it" } ?: ""),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

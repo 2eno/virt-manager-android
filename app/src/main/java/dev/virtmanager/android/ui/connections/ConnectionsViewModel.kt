@@ -20,8 +20,10 @@ class ConnectionsViewModel(private val app: VirtManagerApp) : ViewModel() {
     val status = app.connections.status
     val themeMode = app.repository.themeMode.stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.SYSTEM)
 
-    /** Profile waiting for the user to type a password. */
-    val passwordRequest = MutableStateFlow<ConnectionProfile?>(null)
+    /** A connection waiting for the user to type the password of [hop] (it or one of its jump hosts). */
+    data class PasswordRequest(val profile: ConnectionProfile, val hop: ConnectionProfile)
+
+    val passwordRequest = MutableStateFlow<PasswordRequest?>(null)
     val error = MutableStateFlow<String?>(null)
 
     private val _opened = Channel<String>(Channel.BUFFERED)
@@ -32,29 +34,36 @@ class ConnectionsViewModel(private val app: VirtManagerApp) : ViewModel() {
     fun autoConnect(list: List<ConnectionProfile>) {
         if (autoConnected) return
         autoConnected = true
-        list.filter { it.autoConnect && !app.connections.needsPassword(it) }.forEach { p ->
+        list.filter { it.autoConnect && app.connections.passwordNeededFor(it, list) == null }.forEach { p ->
             viewModelScope.launch { runCatching { app.connections.connect(p.id) } }
         }
     }
 
     fun open(profile: ConnectionProfile) {
         if (app.connections.get(profile.id) != null) {
-            _opened.trySend(profile.id)
+            if (!profile.sshOnly) _opened.trySend(profile.id)
             return
         }
-        if (app.connections.needsPassword(profile)) {
-            passwordRequest.value = profile
+        app.connections.passwordNeededFor(profile, profiles.value.orEmpty())?.let { hop ->
+            passwordRequest.value = PasswordRequest(profile, hop)
             return
         }
-        connect(profile, null)
+        connect(profile)
     }
 
-    fun connect(profile: ConnectionProfile, password: String?) {
+    /** The user typed the password asked for by [request]; asks for the next hop's or connects. */
+    fun passwordEntered(request: PasswordRequest, password: String) {
         passwordRequest.value = null
+        app.connections.rememberPassword(request.hop.id, password)
+        open(request.profile)
+    }
+
+    private fun connect(profile: ConnectionProfile) {
         viewModelScope.launch {
             try {
-                app.connections.connect(profile.id, password)
-                _opened.send(profile.id)
+                app.connections.connect(profile.id)
+                // A plain SSH host has no hypervisor to show; its card just turns "Connected".
+                if (!profile.sshOnly) _opened.send(profile.id)
             } catch (t: Throwable) {
                 error.value = "${profile.name}: ${ConnectionManager.friendly(t)}"
             }
