@@ -1,11 +1,16 @@
 name: Release
 
-# Push a tag like v0.1.0 to build a signed release APK and publish it as a GitHub Release.
+# Push a tag like v0.1.0 (or run the workflow with a version) to build a signed release APK and publish it as a GitHub Release.
 # Needs the repository secrets KEYSTORE (base64 of the keystore file), KEYSTORE_PASSWORD,
 # KEYSTORE_ALIAS and KEYSTORE_ALIAS_PASSWORD (if empty, the keystore password is used).
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to create for this commit, e.g. v0.1.0"
+        required: true
 
 permissions:
   contents: write
@@ -13,6 +18,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -40,8 +47,10 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.KEYSTORE_ALIAS_PASSWORD || secrets.KEYSTORE_PASSWORD }}
         run: |
           ./gradlew --no-daemon testDebugUnitTest assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk "virt-manager-android-${GITHUB_REF_NAME}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "virt-manager-android-$TAG.apk"
       - uses: softprops/action-gh-release@v2
         with:
-          files: virt-manager-android-${{ github.ref_name }}.apk
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          files: virt-manager-android-${{ env.TAG }}.apk
           generate_release_notes: true
