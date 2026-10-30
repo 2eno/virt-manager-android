@@ -148,9 +148,9 @@ classes JSch would otherwise use, so the app configures JSch's Bouncy Castle imp
 
 Pushing a tag like `v0.1.0` runs `.github/workflows/release.yml`: it runs the unit tests,
 builds the release APK (R8-minified), signs it and publishes it as a GitHub Release. It needs
-the repository secrets `RELEASE_KEYSTORE_BASE64` (`base64 -w0 release.jks`),
-`RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS` and `RELEASE_KEY_PASSWORD`. Locally the same
-variables (with `RELEASE_KEYSTORE` as the path to the keystore) sign `assembleRelease`.
+the repository secrets `KEYSTORE` (`base64 -w0 release.jks`), `KEYSTORE_PASSWORD`,
+`KEYSTORE_ALIAS` and `KEYSTORE_ALIAS_PASSWORD`. Locally the variables `RELEASE_KEYSTORE` (path),
+`RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS` and `RELEASE_KEY_PASSWORD` sign `assembleRelease`.
 
 ### Tests
 
